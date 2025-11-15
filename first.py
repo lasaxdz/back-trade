@@ -297,11 +297,17 @@ def get_stock_list(all_data, current_date, sold_stock, portfolio_positions):
     stock_list = filter_gem_stock(stock_list)
     # b. 过滤当日涨幅不低于9%的个股
     stock_list = filter_high_daily_gain(stock_list, all_data, current_date)
-    # c. 过滤低于20日均线的个股
-    stock_list = filter_price_above_ma20(stock_list, all_data, current_date)
+    # c. 过滤低于5日均线的个股
+    stock_list = filter_price_above_ma5(stock_list, all_data, current_date)
     
     # 6. 过滤冷却期内的股票
     stock_list = filter_buyagain(stock_list, sold_stock)
+    
+    # 输出终极排名信息
+    print(f"[{current_date.strftime('%Y-%m-%d')}] 终极排名结果:")
+    print(f"- 符合条件的股票总数: {len(stock_list)}")
+    if len(stock_list) > 0:
+        print(f"- 排名前10的股票: {', '.join(stock_list[:10])}")
     
     return stock_list
 
@@ -474,6 +480,9 @@ def run_backtest():
         return None, None
     print('登录Baostock成功')
     
+    # 用于控制是否输出每日排名（避免输出过多）
+    print_rank_interval = 5  # 每5个交易日输出一次
+    
     try:
         print("=" * 60)
         print(f"单因子选股策略回测 (Baostock数据源)")
@@ -525,13 +534,23 @@ def run_backtest():
             candidate_stocks = get_stock_list(all_data, current_date, sold_stock, portfolio.keys())
             
             # 1. 卖出规则检查：
-            # a. 止损卖出：股价跌破20日均线时卖出
+            # a. 止损卖出：股价跌破5日均线时卖出
             for stock in list(portfolio.keys()):
-                if is_price_below_ma20(stock, all_data, current_date):
-                    if stock not in all_data or current_date not in all_data[stock].index:
-                        continue
-                    
-                    price = all_data[stock].loc[current_date, 'close']
+                # 计算5日均线
+                df = all_data.get(stock)
+                if df is None or current_date not in df.index or len(df) < 5:
+                    continue
+                
+                current_idx = df.index.get_loc(current_date)
+                if current_idx < 4:
+                    continue
+                
+                current_price = df.loc[current_date, 'close']
+                ma5_data = df.iloc[current_idx-4:current_idx+1]
+                ma5 = ma5_data['close'].mean()
+                
+                if current_price < ma5:
+                    price = current_price
                     shares = portfolio[stock]
                     if shares > 0:
                         sell_reason = '止损'
