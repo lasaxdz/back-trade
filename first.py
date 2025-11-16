@@ -314,6 +314,23 @@ def filter_high_daily_gain(stock_list, all_data, current_date):
     
     return filtered
 
+def filter_high_daily_drop(stock_list, all_data, current_date):
+    filtered = []
+    for stock in stock_list:
+        if stock not in all_data:
+            continue
+        df = all_data[stock]
+        if current_date not in df.index or len(df) < 2:
+            continue
+        current_idx = df.index.get_loc(current_date)
+        if current_idx < 1:
+            continue
+        current_close = df.loc[current_date, 'close']
+        prev_close = df.iloc[current_idx-1]['close']
+        gain = (current_close - prev_close) / prev_close * 100
+        if gain > -9:
+            filtered.append(stock)
+    return filtered
 # ==================== 4. 选股与排名函数 ====================
 def get_stock_list(all_data, current_date, sold_stock, portfolio_positions): # 这个参数后面会用到
     """获取股票列表 - 每日更新股池"""
@@ -329,7 +346,9 @@ def get_stock_list(all_data, current_date, sold_stock, portfolio_positions): # �
     # 5. 高级过滤：
     # a. 过滤当日涨幅不低于9%的个股
     stock_list = filter_high_daily_gain(stock_list, all_data, current_date)
-    # b. 过滤低于5日均线的个股
+    # b. 过滤当日跌幅不低于9%的个股
+    stock_list = filter_high_daily_drop(stock_list, all_data, current_date)
+    # c. 过滤5日均线以下的股票
     stock_list = filter_price_above_ma(stock_list, all_data, current_date, period=5)
     
     # 6. 过滤冷却期内的股票
@@ -764,7 +783,7 @@ params = StrategyParams()
 # 注意：要求时间间隔至少2个月，且第1周用于生成均线，不产生交易。
 START_DATE = '2025-09-14'
 END_DATE = '2025-11-14'
-USE_NEW_DATA = False  # 是否下载新数据（True: 下载新数据并覆盖旧数据，False: 尝试使用缓存的数据）
+USE_NEW_DATA = True  # 是否下载新数据（True: 下载新数据并覆盖旧数据，False: 尝试使用缓存的数据）
 
 # 股票池由Excel每日更新覆盖
 STOCK_POOL = []
