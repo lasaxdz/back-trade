@@ -104,7 +104,7 @@ def get_all_stock_data(symbol_list, start_date, end_date):
     for i, symbol in enumerate(symbol_list):
         df = get_stock_hist_data(symbol, start_date, end_date)
         
-        if df is not None and not df.empty and len(df) > 30:
+        if df is not None and not df.empty and len(df) >= 30:
             all_data[symbol] = df
         else:
             print(f"警告: {symbol} 数据不足或为空，跳过")
@@ -293,11 +293,9 @@ def get_stock_list(all_data, current_date, sold_stock, portfolio_positions):
     stock_list = get_stock_rank_turnover_ratio(all_data, stock_list, current_date)
     
     # 5. 高级过滤：
-    # a. 再次过滤股票代码不是以"00、60"开头的个股（确保排名后仍然符合条件）
-    stock_list = filter_gem_stock(stock_list)
-    # b. 过滤当日涨幅不低于9%的个股
+    # a. 过滤当日涨幅不低于9%的个股
     stock_list = filter_high_daily_gain(stock_list, all_data, current_date)
-    # c. 过滤低于5日均线的个股
+    # b. 过滤低于5日均线的个股
     stock_list = filter_price_above_ma5(stock_list, all_data, current_date)
     
     # 6. 过滤冷却期内的股票
@@ -385,7 +383,7 @@ def filter_high_daily_gain(stock_list, all_data, current_date):
         gain = (current_close - prev_close) / prev_close * 100
         
         # 过滤涨幅不低于9%的个股
-        if gain < 9:
+        if gain <= 9:
             filtered.append(stock)
     
     return filtered
@@ -480,9 +478,6 @@ def run_backtest():
         return None, None
     print('登录Baostock成功')
     
-    # 用于控制是否输出每日排名（避免输出过多）
-    print_rank_interval = 5  # 每5个交易日输出一次
-    
     try:
         print("=" * 60)
         print(f"单因子选股策略回测 (Baostock数据源)")
@@ -553,7 +548,7 @@ def run_backtest():
                     price = current_price
                     shares = portfolio[stock]
                     if shares > 0:
-                        sell_reason = '止损'
+                        sell_reason = '破线'
                         
                         amount = shares * price
                         commission = max(amount * params.commission_rate, params.min_commission)
@@ -732,6 +727,7 @@ class StrategyParams:
 
 params = StrategyParams()
 
+# 注意：要求时间间隔至少2个月。因为1个月平均只有18个有效交易数据
 START_DATE = '2025-09-01'
 END_DATE = '2025-11-01'
 
