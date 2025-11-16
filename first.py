@@ -391,21 +391,19 @@ def print_trade_settlement(trade_log, portfolio, cash, last_date, all_data):
     print("交易交割单 (模拟)")
     print("=" * 80)
     
-    # 移除操作时间点列
-    headers = ["交易日期", "股票代码", "操作", "价格(元)", "数量(股)"]
-    print("{:<12} {:<10} {:<12} {:<10} {:<12}".format(*headers))
-    print("-" * 80)
+    headers = ["交易日期", "股票代码", "操作", "价格(元)", "数量(股)", "股票名称"]
+    print("{:<12} {:<12} {:<12} {:<10} {:<12} {:<12}".format(*headers))
+    print("-" * 95)
     
     for trade in trade_log:
         date_str = trade['date'].strftime('%Y-%m-%d')
         symbol = trade['symbol']
+        name = CODE_NAME_MAP.get(symbol, '')
         action = trade['action']
         price = trade['price']
         shares = trade['shares']
-        
-        print(f"{date_str:<12} {symbol:<10} {action:<12} {price:<10.2f} {shares:<12.2f}")
-    
-    print("-" * 80)
+        print(f"{date_str:<12} {symbol:<12} {action:<12} {price:<10.2f} {shares:<12.2f} {name:<12}")
+    print("-" * 95)
 
 # ==================== 6. 回测主循环 ====================
 def run_backtest():
@@ -426,6 +424,9 @@ def run_backtest():
         global STOCK_POOL
         STOCK_POOL = excel_stock_pool
         print(f"STOCK_POOL 已用Excel更新，股票数: {len(STOCK_POOL)}")
+        code_name_map = load_code_name_map_from_excel(EXCEL_STOCK_POOL_PATH)
+        global CODE_NAME_MAP
+        CODE_NAME_MAP = code_name_map
     
     try:
         print("=" * 60)
@@ -721,6 +722,34 @@ def load_stock_pool_from_excel(excel_path, sheet_name='选股结果', max_count=
     return normalized
 
 
+def load_code_name_map_from_excel(excel_path, sheet_name='选股结果'):
+    try:
+        df = pd.read_excel(excel_path, sheet_name=sheet_name)
+    except Exception:
+        return {}
+    candidates_code = ['股票代码', '代码', 'symbol', 'Symbol', '证券代码']
+    candidates_name = ['股票简称', '名称', 'name', 'Name']
+    code_col = next((c for c in candidates_code if c in df.columns), None)
+    name_col = next((c for c in candidates_name if c in df.columns), None)
+    if code_col is None or name_col is None:
+        return {}
+    codes = df[code_col].dropna().astype(str).str.strip()
+    names = df[name_col].dropna().astype(str).str.strip()
+    if len(codes) != len(df[name_col].dropna()):
+        df = df[[code_col, name_col]].dropna()
+        codes = df[code_col].astype(str).str.strip()
+        names = df[name_col].astype(str).str.strip()
+    codes = codes[codes.str.match(r'^\d{6}(\.(SZ|SH))?$', na=False)]
+    mapping = {}
+    for code, name in zip(codes, names):
+        if '.' in code:
+            key = code.upper()
+        else:
+            clean = code.zfill(6)
+            key = f"{clean}.SH" if clean.startswith('60') else f"{clean}.SZ"
+        mapping[key] = name
+    return mapping
+
 # ==================== 8. 主程序 ====================
 class StrategyParams:
     def __init__(self):
@@ -739,7 +768,8 @@ USE_NEW_DATA = False  # 是否下载新数据（True: 下载新数据并覆盖�
 
 # 股票池由Excel每日更新覆盖
 STOCK_POOL = []
-EXCEL_STOCK_POOL_PATH = r"f:\21.My_CodeBase\3.my_trade\成交额排名前100，主板，现价大于20日均线.xlsx"
+EXCEL_STOCK_POOL_PATH = r"f:\21.My_CodeBase\3.my_trade\5日平均成交额排名前100，主板，现价大于20日均....xlsx"
+CODE_NAME_MAP = {}
 
 
 if __name__ == '__main__':
