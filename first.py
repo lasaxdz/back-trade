@@ -94,8 +94,37 @@ def get_stock_hist_data(symbol, start_date, end_date, adjustflag='2'):
         print(f"获取 {symbol} 数据失败: {e}")
         return None
 
-def get_all_stock_data(symbol_list, start_date, end_date):
-    """下载自定义股票池的股票数据"""
+def get_all_stock_data(symbol_list, start_date, end_date, use_new_data=True):
+    """下载自定义股票池的股票数据，支持数据缓存"""
+    import os
+    import pickle
+    
+    # 缓存文件路径
+    cache_dir = 'stock_data_cache'
+    os.makedirs(cache_dir, exist_ok=True)
+    
+    # 生成缓存文件名，包含日期范围信息
+    cache_filename = f"{cache_dir}/stock_data_{start_date}_{end_date}.pkl"
+    
+    # 如果不使用新数据且缓存文件存在，则尝试加载缓存
+    if not use_new_data and os.path.exists(cache_filename):
+        try:
+            print(f"正在从缓存文件加载数据: {cache_filename}")
+            with open(cache_filename, 'rb') as f:
+                cached_data = pickle.load(f)
+            
+            # 检查缓存数据是否包含所有需要的股票
+            missing_symbols = [s for s in symbol_list if s not in cached_data['all_data']]
+            
+            if not missing_symbols:
+                print(f"成功从缓存加载 {len(cached_data['all_data'])} 只股票数据")
+                return cached_data['all_data'], cached_data['failed_symbols']
+            else:
+                print(f"缓存数据不完整，缺少 {len(missing_symbols)} 只股票")
+        except Exception as e:
+            print(f"加载缓存数据失败: {e}")
+    
+    # 下载新数据
     all_data = {}
     failed_symbols = []
     
@@ -115,6 +144,20 @@ def get_all_stock_data(symbol_list, start_date, end_date):
     print(f"成功下载 {len(all_data)} 只股票，失败 {len(failed_symbols)} 只")
     if failed_symbols:
         print(f"失败列表: {failed_symbols}")
+    
+    # 保存数据到缓存文件
+    try:
+        cache_data = {
+            'all_data': all_data,
+            'failed_symbols': failed_symbols,
+            'timestamp': pd.Timestamp.now()
+        }
+        with open(cache_filename, 'wb') as f:
+            pickle.dump(cache_data, f)
+        print(f"数据已保存到缓存文件: {cache_filename}")
+    except Exception as e:
+        print(f"保存缓存数据失败: {e}")
+    
     return all_data, failed_symbols
 
 def get_index_data(start_date, end_date):
@@ -485,8 +528,8 @@ def run_backtest():
         print(f"初始资金: {params.initial_capital:,.2f} 元")
         print("=" * 60)
         
-        # 1. 下载股票数据
-        all_data, failed_symbols = get_all_stock_data(STOCK_POOL, START_DATE, END_DATE)
+        # 1. 下载股票数据（使用全局设置决定是否下载新数据）
+        all_data, failed_symbols = get_all_stock_data(STOCK_POOL, START_DATE, END_DATE, use_new_data=USE_NEW_DATA)
         
         # 2. 下载上证指数
         index_df = get_index_data(START_DATE, END_DATE)
@@ -502,7 +545,8 @@ def run_backtest():
         
         # 3. 初始化
         cash = params.initial_capital
-        portfolio = {}
+        portfolio = {}  # 持有股数
+        stock_avg_cost = {}  # 平均买入成本
         sold_stock = {}
         trade_log = []
         equity_curve = []
@@ -548,7 +592,14 @@ def run_backtest():
                     price = current_price
                     shares = portfolio[stock]
                     if shares > 0:
-                        sell_reason = '破线'
+                        # 计算盈亏情况，判断是止损还是止盈
+                        if stock in stock_avg_cost and stock_avg_cost[stock] > 0:
+                            if price > stock_avg_cost[stock]:
+                                sell_reason = '破线止盈'
+                            else:
+                                sell_reason = '破线止损'
+                        else:
+                            sell_reason = '破线卖出'  # 无法计算成本时的默认值
                         
                         amount = shares * price
                         commission = max(amount * params.commission_rate, params.min_commission)
@@ -632,12 +683,20 @@ def run_backtest():
                     
                     # 执行买入
                     cash -= total_cost
-                    portfolio[stock] = portfolio.get(stock, 0) + shares_to_buy
+                    
+                    # 更新持仓和平均成本
+                    old_shares = portfolio.get(stock, 0)
+                    old_cost = stock_avg_cost.get(stock, 0) * old_shares
+                    new_shares = old_shares + shares_to_buy
+                    new_cost = old_cost + buy_amount + commission
+                    
+                    portfolio[stock] = new_shares
+                    stock_avg_cost[stock] = new_cost / new_shares if new_shares > 0 else 0
                     
                     trade_log.append({
                         'date': current_date,
                         'symbol': stock,
-                        'action': '买入',
+                        'action': '符合买入',
                         'price': price,
                         'shares': shares_to_buy,
                         'amount': buy_amount,
@@ -728,12 +787,14 @@ class StrategyParams:
 params = StrategyParams()
 
 # 注意：要求时间间隔至少2个月。因为1个月平均只有18个有效交易数据
-START_DATE = '2025-09-01'
-END_DATE = '2025-11-01'
+START_DATE = '2025-09-14'
+END_DATE = '2025-11-14'
+# 是否下载新数据（True: 下载新数据并覆盖旧数据，False: 尝试使用缓存的数据）
+USE_NEW_DATA = False
 
 STOCK_POOL = [
     # 每日更新：同花顺自选股板块
-    "600036.SH", "600089.SH", "600096.SH", "600110.SH", "600118.SH", "600141.SH","600219.SH", "600309.SH", "600438.SH", "600516.SH", "600519.SH", "600537.SH","600550.SH", "600711.SH", "600745.SH", "600875.SH", "600884.SH", "600887.SH","600977.SH", "601012.SH", "601020.SH", "601166.SH", "601179.SH", "601211.SH","601288.SH", "601318.SH", "601360.SH", "601398.SH", "601600.SH", "601688.SH","601877.SH", "601888.SH", "601899.SH", "601929.SH", "601988.SH", "603026.SH","603067.SH", "603185.SH", "603260.SH", "603516.SH", "603659.SH", "603686.SH","603799.SH", "603978.SH", "603993.SH", "605178.SH",
+    "600036.SH", "600089.SH", "600096.SH", "600110.SH", "600118.SH", "600141.SH","600219.SH", "600309.SH", "600438.SH", "600516.SH", "600519.SH", "600537.SH","600550.SH", "600711.SH", "600745.SH", "600875.SH", "600884.SH", "600887.SH","600977.SH", "601012.SH", "601020.SH", "601166.SH", "601179.SH", "601211.SH","601288.SH", "601318.SH", "601360.SH", "601398.SH", "601600.SH", "601688.SH","601877.SH", "601888.SH", "601899.SH", "601929.SH", "601988.SH", "603026.SH","603067.SH", "603185.SH", "603260.SH", "603516.SH", "603659.SH", "603686.SH","603799.SH", "603978.SH", "603993.SH", 
     "000034.SZ", "000100.SZ", "000333.SZ", "000338.SZ", "000426.SZ", "000533.SZ","000555.SZ", "000559.SZ", "000564.SZ", "000568.SZ", "000572.SZ", "000592.SZ","000620.SZ", "000651.SZ", "000657.SZ", "000686.SZ", "000792.SZ", "000796.SZ","000807.SZ", "000833.SZ", "000858.SZ", "000973.SZ", "001309.SZ", "002028.SZ","002115.SZ", "002129.SZ", "002155.SZ", "002163.SZ", "002176.SZ", "002196.SZ","002213.SZ", "002240.SZ", "002250.SZ", "002251.SZ", "002255.SZ", "002312.SZ","002317.SZ", "002326.SZ", "002340.SZ", "002407.SZ", "002426.SZ", "002451.SZ","002459.SZ", "002460.SZ", "002466.SZ", "002497.SZ", "002506.SZ", "002639.SZ","002709.SZ", "002728.SZ", "002738.SZ", "002759.SZ", "002812.SZ", "002885.SZ"
 ]
 
