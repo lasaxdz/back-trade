@@ -31,13 +31,11 @@ def convert_symbol_to_baostock(symbol):
         return f'sz.{code}'
     return symbol
 
-
 def get_stock_hist_data(symbol, start_date, end_date, adjustflag='2'):
     """使用Baostock获取单只股票历史数据。adjustflag: '1'后复权, '2'前复权, '3'不复权"""
     try:
         # 转换股票代码格式
         code = convert_symbol_to_baostock(symbol)
-        
         # 获取股票日K线数据
         rs = bs.query_history_k_data_plus(
             code,
@@ -91,16 +89,14 @@ def get_stock_hist_data(symbol, start_date, end_date, adjustflag='2'):
         print(f"获取 {symbol} 数据失败: {e}")
         return None
 
-
 def get_all_stock_data(symbol_list, start_date, end_date, use_new_data=True):
     """下载自定义股票池的股票数据，支持数据缓存"""
     import os
     import pickle
-    
+
     # 缓存文件路径
     cache_dir = 'stock_data_cache'
     os.makedirs(cache_dir, exist_ok=True)
-    
     # 生成缓存文件名，包含日期范围信息
     cache_filename = f"{cache_dir}/stock_data_{start_date}_{end_date}.pkl"
     
@@ -130,7 +126,6 @@ def get_all_stock_data(symbol_list, start_date, end_date, use_new_data=True):
     
     for i, symbol in enumerate(symbol_list):
         df = get_stock_hist_data(symbol, start_date, end_date)
-        
         if df is not None and not df.empty and len(df) >= 30:
             all_data[symbol] = df
         else:
@@ -163,7 +158,6 @@ def get_index_data(start_date, end_date):
     """获取上证指数数据"""
     try:
         print("下载上证指数数据...")
-        
         # 获取上证指数历史数据
         rs = bs.query_history_k_data_plus(
             "sh.000001",
@@ -208,15 +202,6 @@ def get_index_data(start_date, end_date):
 
 
 # ==================== 3. 过滤函数 ====================
-def filter_gem_stock(stock_list):
-    """只保留00和60开头的股票（主板）"""
-    filtered = []
-    for stock in stock_list:
-        code = stock.split('.')[0]
-        if code.startswith(('00', '60')):
-            filtered.append(stock)
-    return filtered
-
 def filter_paused_stock(stock_list, all_data, current_date):
     """优化停牌过滤函数（用成交量判断）"""
     return [
@@ -231,7 +216,7 @@ def filter_buyagain(stock_list, sold_stock):
     return [stock for stock in stock_list if stock not in sold_stock]
 
 def filter_price_above_ma(stock_list, all_data, current_date, period=5):
-    """通用均线过滤函数，替代单独的5日和20日函数"""
+    """通用均线过滤函数，替代单独的5日"""
     filtered = []
     for stock in stock_list:
         if stock not in all_data:
@@ -274,57 +259,6 @@ def get_ma5(symbol, all_data, current_date):
     ma5 = df.iloc[current_idx-4:current_idx+1]['close'].mean()
     return ma5
 
-def is_price_below_ma20(symbol, all_data, current_date):
-    """判断股价是否跌破20日均线"""
-    if symbol not in all_data:
-        return False
-    
-    df = all_data[symbol]
-    if current_date not in df.index or len(df) < 20:
-        return False
-    
-    current_idx = df.index.get_loc(current_date)
-    if current_idx < 19:
-        return False
-    
-    current_price = df.loc[current_date, 'close']
-    # 计算20日均线
-    ma20_data = df.iloc[current_idx-19:current_idx+1]
-    ma20 = ma20_data['close'].mean()
-    
-    return current_price < ma20
-
-# ==================== 4. 选股与排名函数 ====================
-def get_stock_list(all_data, current_date, sold_stock, portfolio_positions): # 这个参数后面会用到
-    """获取股票列表 - 每日更新股池"""
-    stock_list = STOCK_POOL.copy()
-    
-    # 1. 过滤股票代码不是以"00、60"开头的个股
-    stock_list = filter_gem_stock(stock_list)
-    # 2. 过滤停牌股票
-    stock_list = filter_paused_stock(stock_list, all_data, current_date)
-    # 3. 初级筛选：成交金额不低于10亿
-    stock_list = filter_turnover_below_billion(stock_list, all_data, current_date)
-    # 4. 初级排名：按当日成交金额/前一日成交金额从小到大排序
-    stock_list = get_stock_rank_turnover_ratio(all_data, stock_list, current_date)
-    
-    # 5. 高级过滤：
-    # a. 过滤当日涨幅不低于9%的个股
-    stock_list = filter_high_daily_gain(stock_list, all_data, current_date)
-    # b. 过滤低于5日均线的个股
-    stock_list = filter_price_above_ma(stock_list, all_data, current_date, period=5)
-    
-    # 6. 过滤冷却期内的股票
-    stock_list = filter_buyagain(stock_list, sold_stock)
-    
-    # 输出终极排名信息
-    print(f"[{current_date.strftime('%Y-%m-%d')}] 终极排名结果:")
-    print(f"- 符合条件的股票总数: {len(stock_list)}")
-    if len(stock_list) > 0:
-        print(f"- 排名前10的股票: {', '.join(stock_list[:10])}")
-    
-    return stock_list
-
 def filter_turnover_below_billion(stock_list, all_data, current_date):
     """过滤当日成交金额低于10亿的股票"""
     filtered = []
@@ -350,6 +284,7 @@ def filter_turnover_below_billion(stock_list, all_data, current_date):
             filtered.append(stock)
     
     return filtered
+
 
 def filter_high_daily_gain(stock_list, all_data, current_date):
     """过滤当日涨幅不低于9%的个股"""
@@ -378,6 +313,35 @@ def filter_high_daily_gain(stock_list, all_data, current_date):
             filtered.append(stock)
     
     return filtered
+
+# ==================== 4. 选股与排名函数 ====================
+def get_stock_list(all_data, current_date, sold_stock, portfolio_positions): # 这个参数后面会用到
+    """获取股票列表 - 每日更新股池"""
+    stock_list = STOCK_POOL.copy()
+    
+    # 2. 过滤停牌股票
+    stock_list = filter_paused_stock(stock_list, all_data, current_date)
+    # 3. 初级筛选：成交金额不低于10亿
+    stock_list = filter_turnover_below_billion(stock_list, all_data, current_date)
+    # 4. 初级排名：按当日成交金额/前一日成交金额从小到大排序
+    stock_list = get_stock_rank_turnover_ratio(all_data, stock_list, current_date)
+    
+    # 5. 高级过滤：
+    # a. 过滤当日涨幅不低于9%的个股
+    stock_list = filter_high_daily_gain(stock_list, all_data, current_date)
+    # b. 过滤低于5日均线的个股
+    stock_list = filter_price_above_ma(stock_list, all_data, current_date, period=5)
+    
+    # 6. 过滤冷却期内的股票
+    stock_list = filter_buyagain(stock_list, sold_stock)
+    
+    # 输出终极排名信息
+    print(f"[{current_date.strftime('%Y-%m-%d')}] 终极排名结果:")
+    print(f"- 符合条件的股票总数: {len(stock_list)}")
+    if len(stock_list) > 0:
+        print(f"- 排名前5的股票: {', '.join(stock_list[:5])}")
+    
+    return stock_list
 
 
 def get_stock_rank_turnover_ratio(all_data, stock_list, current_date):
@@ -453,6 +417,16 @@ def run_backtest():
         return None, None
     print('登录Baostock成功')
     
+    excel_stock_pool = load_stock_pool_from_excel(EXCEL_STOCK_POOL_PATH)
+    if not excel_stock_pool:
+        print("Excel股票池为空或读取失败，回测终止")
+        bs.logout()
+        return None, None
+    else:
+        global STOCK_POOL
+        STOCK_POOL = excel_stock_pool
+        print(f"STOCK_POOL 已用Excel更新，股票数: {len(STOCK_POOL)}")
+    
     try:
         print("=" * 60)
         print(f"单因子选股策略回测 (Baostock数据源)")
@@ -460,7 +434,7 @@ def run_backtest():
         print(f"初始资金: {params.initial_capital:,.2f} 元")
         print("=" * 60)
         
-        # 1. 下载股票数据（使用全局设置决定是否下载新数据）
+        # 1. 下载股票数据（使用Excel更新后的 STOCK_POOL）
         all_data, failed_symbols = get_all_stock_data(STOCK_POOL, START_DATE, END_DATE, use_new_data=USE_NEW_DATA)
         
         # 2. 下载上证指数
@@ -666,10 +640,9 @@ def run_backtest():
         
         return equity_curve, trade_log
         
-    finally:
-        # 登出Baostock系统
+    # 登出Baostock系统
+    finally:  
         bs.logout()
-        print('登出Baostock系统')
 
 # ==================== 7. 可视化 ====================
 def plot_results(all_data, equity_curve, dates, trade_log, initial_capital):
@@ -707,6 +680,47 @@ def plot_results(all_data, equity_curve, dates, trade_log, initial_capital):
     plt.tight_layout()
     plt.show()
 
+def load_stock_pool_from_excel(excel_path, sheet_name='选股结果', max_count=100):
+    """从Excel文件中读取股票池，最多max_count只股票（max_count会根据实际数量截取）"""
+    try:
+        df = pd.read_excel(excel_path, sheet_name=sheet_name)
+    except Exception as e:
+        print(f"读取股票池Excel失败: {e}")
+        return []
+    
+    candidates = ['股票代码', '代码', 'symbol', 'Symbol', '证券代码']
+    code_col = next((c for c in candidates if c in df.columns), None)
+    if code_col is None:
+        print("Excel表中未找到“股票代码”列，无法载入股票池")
+        return []
+    
+    raw_series = df[code_col]
+    raw_count = raw_series.notna().sum()
+
+    codes = raw_series.dropna().astype(str).str.strip()
+    # 只保留合理的代码格式：6位数字，可带 .SZ/.SH 后缀
+    codes = codes[codes.str.match(r'^\d{6}(\.(SZ|SH))?$', na=False)]
+    
+    normalized = []
+    for code in codes:
+        if '.' in code:
+            normalized.append(code.upper())
+        else:
+            clean = code.zfill(6)
+            if clean.startswith('60'):
+                normalized.append(f"{clean}.SH")
+            else:
+                normalized.append(f"{clean}.SZ")
+    
+    # 去重并按 max_count 截取
+    dedup_ordered = list(dict.fromkeys(normalized))
+    final_codes = dedup_ordered[:max_count] if max_count else dedup_ordered
+
+    print(f"已从Excel载入股票池 原始{raw_count}，去重{len(dedup_ordered)}，最终{len(final_codes)} 只股票")
+    return final_codes
+    return normalized
+
+
 # ==================== 8. 主程序 ====================
 class StrategyParams:
     def __init__(self):
@@ -715,27 +729,23 @@ class StrategyParams:
         self.commission_rate = 0.0001
         self.min_commission = 0.01
         self.initial_capital = 1_0000.0
-
 params = StrategyParams()
+
 
 # 注意：要求时间间隔至少2个月，且第1周用于生成均线，不产生交易。
 START_DATE = '2025-09-14'
 END_DATE = '2025-11-14'
-# 是否下载新数据（True: 下载新数据并覆盖旧数据，False: 尝试使用缓存的数据）
-USE_NEW_DATA = False
+USE_NEW_DATA = False  # 是否下载新数据（True: 下载新数据并覆盖旧数据，False: 尝试使用缓存的数据）
 
-STOCK_POOL = [
-    # 每日更新：同花顺自选股板块
-    "600036.SH", "600089.SH", "600096.SH", "600110.SH", "600118.SH", "600141.SH","600219.SH", "600309.SH", "600438.SH", "600516.SH", "600519.SH", "600537.SH","600550.SH", "600711.SH", "600745.SH", "600875.SH", "600884.SH", "600887.SH","600977.SH", "601012.SH", "601020.SH", "601166.SH", "601179.SH", "601211.SH","601288.SH", "601318.SH", "601360.SH", "601398.SH", "601600.SH", "601688.SH","601877.SH", "601888.SH", "601899.SH", "601929.SH", "601988.SH", "603026.SH","603067.SH", "603185.SH", "603260.SH", "603516.SH", "603659.SH", "603686.SH","603799.SH", "603978.SH", "603993.SH", 
-    "000034.SZ", "000100.SZ", "000333.SZ", "000338.SZ", "000426.SZ", "000533.SZ","000555.SZ", "000559.SZ", "000564.SZ", "000568.SZ", "000572.SZ", "000592.SZ","000620.SZ", "000651.SZ", "000657.SZ", "000686.SZ", "000792.SZ", "000796.SZ","000807.SZ", "000833.SZ", "000858.SZ", "000973.SZ", "001309.SZ", "002028.SZ","002115.SZ", "002129.SZ", "002155.SZ", "002163.SZ", "002176.SZ", "002196.SZ","002213.SZ", "002240.SZ", "002250.SZ", "002251.SZ", "002255.SZ", "002312.SZ","002317.SZ", "002326.SZ", "002340.SZ", "002407.SZ", "002426.SZ", "002451.SZ","002459.SZ", "002460.SZ", "002466.SZ", "002497.SZ", "002506.SZ", "002639.SZ","002709.SZ", "002728.SZ", "002738.SZ", "002759.SZ", "002812.SZ", "002885.SZ"
-]
+# 股票池由Excel每日更新覆盖
+STOCK_POOL = []
+EXCEL_STOCK_POOL_PATH = r"f:\21.My_CodeBase\3.my_trade\成交额排名前100，主板，现价大于20日均线.xlsx"
+
 
 if __name__ == '__main__':
     result = run_backtest()
     if result is not None:
         equity_curve, trade_log = result
-        print("\n✓ 回测完成")
+        print("回测完成✓")
     else:
-        print("\n✗ 回测失败")
-
-细究本策略的核心思路
+        print("回测失败✗")
