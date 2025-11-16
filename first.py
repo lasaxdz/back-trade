@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
 """
+数据源: Baostock (http://baostock.com/)
 单因子选股策略 → Baostock + pandas 回测 + 可视化 + 交割单
-数据源：Baostock (http://baostock.com/)
+依赖安装：pip install pandas numpy matplotlib baostock
+===========
+1, 所有的操作, 都是按“收盘价”操作的;
+2, BaoStock.com 当前交易日18:00, 完成复权因子数据入库;
 """
 
 # ==================== 1. 基础库 ====================
@@ -19,10 +23,7 @@ plt.rcParams['axes.unicode_minus'] = False
 
 # ==================== 2. 辅助函数 ====================
 def convert_symbol_to_baostock(symbol):
-    """
-    将Yahoo Finance格式的股票代码转换为Baostock格式
-    例如: 600438.SS -> sh.600438, 002130.SZ -> sz.002130
-    """
+    """将Yahoo Finance格式的股票代码转换为Baostock格式。例如: 600438.SS -> sh.600438, 002130.SZ -> sz.002130"""
     code = symbol.split('.')[0]
     if symbol.endswith('.SS'):
         return f'sh.{code}'
@@ -31,12 +32,8 @@ def convert_symbol_to_baostock(symbol):
     return symbol
 
 
-
 def get_stock_hist_data(symbol, start_date, end_date, adjustflag='2'):
-    """
-    使用Baostock获取单只股票历史数据
-    adjustflag: '1'后复权, '2'前复权, '3'不复权
-    """
+    """使用Baostock获取单只股票历史数据。adjustflag: '1'后复权, '2'前复权, '3'不复权"""
     try:
         # 转换股票代码格式
         code = convert_symbol_to_baostock(symbol)
@@ -93,6 +90,7 @@ def get_stock_hist_data(symbol, start_date, end_date, adjustflag='2'):
     except Exception as e:
         print(f"获取 {symbol} 数据失败: {e}")
         return None
+
 
 def get_all_stock_data(symbol_list, start_date, end_date, use_new_data=True):
     """下载自定义股票池的股票数据，支持数据缓存"""
@@ -160,6 +158,7 @@ def get_all_stock_data(symbol_list, start_date, end_date, use_new_data=True):
     
     return all_data, failed_symbols
 
+
 def get_index_data(start_date, end_date):
     """获取上证指数数据"""
     try:
@@ -207,6 +206,7 @@ def get_index_data(start_date, end_date):
         print(f"下载上证指数失败: {e}")
         return None
 
+
 # ==================== 3. 过滤函数 ====================
 def filter_gem_stock(stock_list):
     """只保留00和60开头的股票（主板）"""
@@ -218,69 +218,45 @@ def filter_gem_stock(stock_list):
     return filtered
 
 def filter_paused_stock(stock_list, all_data, current_date):
-    """过滤停牌股票（用成交量判断）"""
-    filtered = []
-    for stock in stock_list:
-        if stock not in all_data:
-            continue
-        
-        df = all_data[stock]
-        if current_date not in df.index:
-            continue
-        
-        volume = df.loc[current_date, 'volume']
-        if volume > 0:
-            filtered.append(stock)
-    
-    return filtered
+    """优化停牌过滤函数（用成交量判断）"""
+    return [
+        stock for stock in stock_list 
+        if (stock in all_data and 
+            current_date in all_data[stock].index and 
+            all_data[stock].loc[current_date, 'volume'] > 0)
+    ]
 
 def filter_buyagain(stock_list, sold_stock):
     """过滤卖出不足params.buyagain日的股票"""
     return [stock for stock in stock_list if stock not in sold_stock]
 
-def filter_price_above_ma5(stock_list, all_data, current_date):
-    """过滤股价小于5日均线的个股"""
+def filter_price_above_ma(stock_list, all_data, current_date, period=5):
+    """通用均线过滤函数，替代单独的5日和20日函数"""
     filtered = []
-    
     for stock in stock_list:
         if stock not in all_data:
             continue
         
         df = all_data[stock]
-        if current_date not in df.index or len(df) < 5:
+        if current_date not in df.index or len(df) < period:
             continue
         
         current_close = df.loc[current_date, 'close']
         current_idx = df.index.get_loc(current_date)
-        ma5_data = df.iloc[current_idx-4:current_idx+1]
-        ma5 = ma5_data['close'].mean()
         
-        if current_close >= ma5:
+        if current_idx < period - 1:
+            continue
+            
+        # 计算period日均线
+        ma_data = df.iloc[current_idx-period+1:current_idx+1]
+        ma_value = ma_data['close'].mean()
+        
+        if current_close >= ma_value:
             filtered.append(stock)
     
     return filtered
 
-def filter_price_above_ma20(stock_list, all_data, current_date):
-    """过滤股价小于20日均线的个股"""
-    filtered = []
-    
-    for stock in stock_list:
-        if stock not in all_data:
-            continue
-        
-        df = all_data[stock]
-        if current_date not in df.index or len(df) < 20:
-            continue
-        
-        current_close = df.loc[current_date, 'close']
-        current_idx = df.index.get_loc(current_date)
-        ma20_data = df.iloc[current_idx-19:current_idx+1]
-        ma20 = ma20_data['close'].mean()
-        
-        if current_close >= ma20:
-            filtered.append(stock)
-    
-    return filtered
+
 
 def get_ma5(symbol, all_data, current_date):
     """获取5日均线值"""
@@ -319,19 +295,16 @@ def is_price_below_ma20(symbol, all_data, current_date):
     return current_price < ma20
 
 # ==================== 4. 选股与排名函数 ====================
-def get_stock_list(all_data, current_date, sold_stock, portfolio_positions):
+def get_stock_list(all_data, current_date, sold_stock, portfolio_positions): # 这个参数后面会用到
     """获取股票列表 - 每日更新股池"""
     stock_list = STOCK_POOL.copy()
     
     # 1. 过滤股票代码不是以"00、60"开头的个股
     stock_list = filter_gem_stock(stock_list)
-    
     # 2. 过滤停牌股票
     stock_list = filter_paused_stock(stock_list, all_data, current_date)
-    
     # 3. 初级筛选：成交金额不低于10亿
     stock_list = filter_turnover_below_billion(stock_list, all_data, current_date)
-    
     # 4. 初级排名：按当日成交金额/前一日成交金额从小到大排序
     stock_list = get_stock_rank_turnover_ratio(all_data, stock_list, current_date)
     
@@ -339,7 +312,7 @@ def get_stock_list(all_data, current_date, sold_stock, portfolio_positions):
     # a. 过滤当日涨幅不低于9%的个股
     stock_list = filter_high_daily_gain(stock_list, all_data, current_date)
     # b. 过滤低于5日均线的个股
-    stock_list = filter_price_above_ma5(stock_list, all_data, current_date)
+    stock_list = filter_price_above_ma(stock_list, all_data, current_date, period=5)
     
     # 6. 过滤冷却期内的股票
     stock_list = filter_buyagain(stock_list, sold_stock)
@@ -351,31 +324,6 @@ def get_stock_list(all_data, current_date, sold_stock, portfolio_positions):
         print(f"- 排名前10的股票: {', '.join(stock_list[:10])}")
     
     return stock_list
-
-def get_volume_5d_turnover(symbol, all_data, current_date):
-    """获取5日平均成交金额"""
-    if symbol not in all_data:
-        return 0
-    
-    df = all_data[symbol]
-    try:
-        current_idx = df.index.get_loc(current_date)
-    except:
-        return 0
-    
-    if current_idx < 4:
-        return 0
-    
-    start_idx = current_idx - 4
-    end_idx = current_idx + 1
-    recent_data = df.iloc[start_idx:end_idx]
-    
-    # Baostock的amount字段就是成交金额
-    if 'turnover_money' in recent_data.columns:
-        return recent_data['turnover_money'].mean()
-    else:
-        turnover_money = recent_data['close'] * recent_data['volume']
-        return turnover_money.mean()
 
 def filter_turnover_below_billion(stock_list, all_data, current_date):
     """过滤当日成交金额低于10亿的股票"""
@@ -431,56 +379,42 @@ def filter_high_daily_gain(stock_list, all_data, current_date):
     
     return filtered
 
+
 def get_stock_rank_turnover_ratio(all_data, stock_list, current_date):
     """股票排名 - 按当日成交金额/前一日成交金额从小到大排序"""
     if not stock_list:
         return []
     
-    ranked_stocks = []
-    turnover_ratios = []
-    
+    scores = []
     for symbol in stock_list:
-        if symbol not in all_data:
+        if symbol not in all_data or current_date not in all_data[symbol].index:
             continue
         
         df = all_data[symbol]
-        if current_date not in df.index or len(df) < 2:
-            continue
-        
         current_idx = df.index.get_loc(current_date)
         if current_idx < 1:
             continue
         
-        # 当日成交金额
+        # 获取成交金额（当日成交金额/前一日成交金额）
         if 'turnover_money' in df.columns:
             current_turnover = df.loc[current_date, 'turnover_money']
-        else:
-            current_price = df.loc[current_date, 'close']
-            current_volume = df.loc[current_date, 'volume']
-            current_turnover = current_price * current_volume
-        
-        # 前一日成交金额
-        if 'turnover_money' in df.columns:
             prev_turnover = df.iloc[current_idx-1]['turnover_money']
         else:
-            prev_price = df.iloc[current_idx-1]['close']
-            prev_volume = df.iloc[current_idx-1]['volume']
+            current_price, current_volume = df.loc[current_date, ['close', 'volume']]
+            prev_data = df.iloc[current_idx-1]
+            prev_price, prev_volume = prev_data['close'], prev_data['volume']
+            current_turnover = current_price * current_volume
             prev_turnover = prev_price * prev_volume
-        
+
         # 避免除以零
         if prev_turnover > 0:
             turnover_ratio = current_turnover / prev_turnover
-            turnover_ratios.append(turnover_ratio)
-            ranked_stocks.append(symbol)
+            scores.append((symbol, turnover_ratio))
     
-    if not ranked_stocks:
-        return []
-    
-    scores = [(ranked_stocks[i], turnover_ratios[i]) for i in range(len(ranked_stocks))]
     # 从小到大排序
     scores.sort(key=lambda x: x[1])
-    
     return [score[0] for score in scores[:min(100, len(scores))]]
+
 
 # ==================== 5. 交割单函数 ====================
 def print_trade_settlement(trade_log, portfolio, cash, last_date, all_data):
@@ -786,11 +720,11 @@ class StrategyParams:
 
 params = StrategyParams()
 
-# 注意：要求时间间隔至少2个月。因为1个月平均只有18个有效交易数据
+# 注意：要求时间间隔至少2个月，且第1周用于生成均线，不产生交易。
 START_DATE = '2025-09-14'
 END_DATE = '2025-11-14'
 # 是否下载新数据（True: 下载新数据并覆盖旧数据，False: 尝试使用缓存的数据）
-USE_NEW_DATA = False
+USE_NEW_DATA = True
 
 STOCK_POOL = [
     # 每日更新：同花顺自选股板块
