@@ -573,34 +573,7 @@ def run_backtest():
                         portfolio[stock] = 0
                         sold_stock[stock] = params.buyagain
             
-            # b. 调仓卖出：持仓股不在选股池中时卖出
-            for stock in list(portfolio.keys()):
-                if stock not in candidate_stocks:
-                    if stock not in all_data or current_date not in all_data[stock].index:
-                        continue
-                    
-                    price = all_data[stock].loc[current_date, 'close']
-                    shares = portfolio[stock]
-                    if shares > 0:
-                        sell_reason = '调仓'
-                        
-                        amount = shares * price
-                        commission = max(amount * params.commission_rate, params.min_commission)
-                        net_amount = amount - commission
-                        
-                        trade_log.append({
-                            'date': current_date,
-                            'symbol': stock,
-                            'action': sell_reason,
-                            'price': price,
-                            'shares': shares,
-                            'amount': amount,
-                            'commission': commission
-                        })
-                        
-                        cash += net_amount
-                        portfolio[stock] = 0
-                        sold_stock[stock] = params.buyagain
+            # 只保留破线卖出（止损）功能，移除调仓卖出
             
             # 2. 买入规则：买入终极排名中排序靠前的股票，单一股票等权重配置
             if candidate_stocks:
@@ -755,7 +728,7 @@ class StrategyParams:
         self.buyagain = 5
         self.commission_rate = 0.0001
         self.min_commission = 0.01
-        self.initial_capital = 10000.0
+        self.initial_capital = 1_0000.0
 
 params = StrategyParams()
 
@@ -763,10 +736,9 @@ START_DATE = '2025-09-01'
 END_DATE = '2025-11-01'
 
 STOCK_POOL = [
-    "601138.SS", "601012.SS", "600089.SS", "601888.SS", "603799.SS", 
-    "601899.SS", "601318.SS", "600111.SS", "600438.SS", 
-    "002475.SZ", "002466.SZ", "002460.SZ", "000002.SZ", "000858.SZ", 
-    "000063.SZ", "002384.SZ", "000568.SZ", "000792.SZ"
+    # 每日更新：同花顺自选股板块
+    "600036.SH", "600089.SH", "600096.SH", "600110.SH", "600118.SH", "600141.SH","600219.SH", "600309.SH", "600438.SH", "600516.SH", "600519.SH", "600537.SH","600550.SH", "600711.SH", "600745.SH", "600875.SH", "600884.SH", "600887.SH","600977.SH", "601012.SH", "601020.SH", "601166.SH", "601179.SH", "601211.SH","601288.SH", "601318.SH", "601360.SH", "601398.SH", "601600.SH", "601688.SH","601877.SH", "601888.SH", "601899.SH", "601929.SH", "601988.SH", "603026.SH","603067.SH", "603185.SH", "603260.SH", "603516.SH", "603659.SH", "603686.SH","603799.SH", "603978.SH", "603993.SH", "605178.SH",
+    "000034.SZ", "000100.SZ", "000333.SZ", "000338.SZ", "000426.SZ", "000533.SZ","000555.SZ", "000559.SZ", "000564.SZ", "000568.SZ", "000572.SZ", "000592.SZ","000620.SZ", "000651.SZ", "000657.SZ", "000686.SZ", "000792.SZ", "000796.SZ","000807.SZ", "000833.SZ", "000858.SZ", "000973.SZ", "001309.SZ", "002028.SZ","002115.SZ", "002129.SZ", "002155.SZ", "002163.SZ", "002176.SZ", "002196.SZ","002213.SZ", "002240.SZ", "002250.SZ", "002251.SZ", "002255.SZ", "002312.SZ","002317.SZ", "002326.SZ", "002340.SZ", "002407.SZ", "002426.SZ", "002451.SZ","002459.SZ", "002460.SZ", "002466.SZ", "002497.SZ", "002506.SZ", "002639.SZ","002709.SZ", "002728.SZ", "002738.SZ", "002759.SZ", "002812.SZ", "002885.SZ"
 ]
 
 if __name__ == '__main__':
