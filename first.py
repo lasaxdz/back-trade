@@ -427,21 +427,19 @@ def print_trade_settlement(trade_log, portfolio, cash, last_date, all_data):
     print("交易交割单 (模拟)")
     print("=" * 80)
     
-    # 添加操作时间点列，默认为"收盘前"，因为策略是基于日线数据
-    headers = ["交易日期", "操作时间点", "股票代码", "操作", "价格(元)", "数量(股)"]
-    print("{:<12} {:<10} {:<10} {:<12} {:<10} {:<12}".format(*headers))
+    # 移除操作时间点列
+    headers = ["交易日期", "股票代码", "操作", "价格(元)", "数量(股)"]
+    print("{:<12} {:<10} {:<12} {:<10} {:<12}".format(*headers))
     print("-" * 80)
     
     for trade in trade_log:
         date_str = trade['date'].strftime('%Y-%m-%d')
-        # 默认交易时间点为收盘前，因为这是基于日线数据的回测
-        time_point = "收盘前"
         symbol = trade['symbol']
         action = trade['action']
         price = trade['price']
         shares = trade['shares']
         
-        print(f"{date_str:<12} {time_point:<10} {symbol:<10} {action:<12} {price:<10.2f} {shares:<12.2f}")
+        print(f"{date_str:<12} {symbol:<10} {action:<12} {price:<10.2f} {shares:<12.2f}")
     
     print("-" * 80)
 
@@ -724,7 +722,7 @@ params = StrategyParams()
 START_DATE = '2025-09-14'
 END_DATE = '2025-11-14'
 # 是否下载新数据（True: 下载新数据并覆盖旧数据，False: 尝试使用缓存的数据）
-USE_NEW_DATA = True
+USE_NEW_DATA = False
 
 STOCK_POOL = [
     # 每日更新：同花顺自选股板块
@@ -739,3 +737,5 @@ if __name__ == '__main__':
         print("\n✓ 回测完成")
     else:
         print("\n✗ 回测失败")
+
+细究本策略的核心思路
