@@ -363,31 +363,6 @@ def run_backtest():
                         cash += net_amount
                         portfolio[stock] = 0
                         sold_stock[stock] = params.buyagain
-            # b. 调仓卖出：持仓股不在选股池中时卖出
-            for stock in list(portfolio.keys()):
-                if stock not in candidate_stocks:
-                    if stock not in all_data or current_date not in all_data[stock].index:
-                        continue
-                    price = all_data[stock].loc[current_date, 'close']
-                    shares = portfolio[stock]
-                    if shares > 0:
-                        sell_reason = '调仓'
-                        amount = shares * price
-                        commission = max(amount * params.commission_rate, params.min_commission)
-                        net_amount = amount - commission
-                        trade_log.append({
-                            'date': current_date,
-                            'symbol': stock,
-                            'action': sell_reason,
-                            'price': price,
-                            'shares': shares,
-                            'amount': amount,
-                            'commission': commission
-                        })
-                        cash += net_amount
-                        portfolio[stock] = 0
-                        sold_stock[stock] = params.buyagain
-            
             # 2. 买入规则：买入终极排名中排序靠前的股票，单一股票等权重配置
             if candidate_stocks:
                 total_value = cash + sum(portfolio[s] * (all_data[s].loc[current_date, 'close'] if s in all_data and current_date in all_data[s].index else 0) for s in portfolio)
@@ -433,7 +408,6 @@ def run_backtest():
                         buy_amount = shares_to_buy * price
                         commission = max(buy_amount * params.commission_rate, params.min_commission)
                         total_cost = buy_amount + commission
-                    
                     # 执行买入
                     cash -= total_cost
                     portfolio[stock] = portfolio.get(stock, 0) + shares_to_buy
