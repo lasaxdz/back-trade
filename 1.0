@@ -1,0 +1,690 @@
+# -*- coding: utf-8 -*-
+"""
+为未来设计，大而全是关键！！！
+"""
+# ==================== 1. 基础库 ====================
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from pytdx.hq import TdxHq_API
+from pytdx.util.best_ip import select_best_ip  # 修复：使用正确的导入
+from datetime import date
+import time
+import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
+import pickle
+
+# 设置警告过滤和中文字体
+warnings.filterwarnings('ignore')
+plt.rcParams['font.sans-serif'] = ['SimHei', 'Arial Unicode MS', 'DejaVu Sans']
+plt.rcParams['axes.unicode_minus'] = False
+
+BEST_SERVER = None  # 全局变量：存储最优服务器信息
+def get_best_server():
+    """获取最优服务器（只执行一次）"""
+    global BEST_SERVER
+    if BEST_SERVER is None:
+        print("正在自动测试最优服务器...")
+        try:
+            best_ip_info = select_best_ip()
+            BEST_SERVER = (best_ip_info['ip'], best_ip_info['port'])
+            print(f"✅ 找到最优服务器: {BEST_SERVER[0]}:{BEST_SERVER[1]}")
+        except Exception as e:
+            print(f"自动选择最优服务器时发生错误: {e}")
+            return None
+    return BEST_SERVER
+
+def tdx_fetch_bars(category, market, code, is_index=False, start=0, batch=800):
+    """拉取 K 线数据，使用 with 语句管理连接"""
+    # 获取最优服务器（首次调用时自动选择，后续复用）
+    server = get_best_server()
+    if server is None:
+        return None
+    best_ip, best_port = server
+    # 创建API对象
+    api = TdxHq_API()
+    parts = []
+    # 连接服务器并获取数据
+    try:
+        with api.connect(best_ip, best_port):
+            cursor = start
+            while True:
+                if is_index:
+                    bars = api.get_index_bars(category, market, code, cursor, batch)
+                else:
+                    bars = api.get_security_bars(category, market, code, cursor, batch)
+                if not bars:
+                    break
+                df_part = api.to_df(bars)
+                parts.append(df_part)
+                cursor += len(df_part)
+                if len(df_part) < batch:
+                    break
+    except Exception as e:
+        print(f"获取数据时发生错误: {e}")
+        return None
+    if not parts:
+        return None
+    return pd.concat(parts, ignore_index=True)
+
+# ==================== 2. 辅助函数 ====================
+def convert_symbol_to_tdx(symbol):
+    """格式转换:'600438.SH'/'SS' -> (1, '600438'), '002130.SZ' -> (0, '002130')"""
+    raw = str(symbol).upper().strip()
+    if raw.endswith('.SS') or raw.endswith('.SH'):
+        code = raw.split('.')[0].zfill(6)
+        market = 1  # 上海
+    elif raw.endswith('.SZ'):
+        code = raw.split('.')[0].zfill(6)
+        market = 0  # 深圳
+    else:
+        code = raw.zfill(6)
+        market = 1 if code.startswith('60') else 0
+    return market, code
+
+def get_stock_hist_data(symbol, start_date, end_date):
+    """使用 pytdx 获取单只股票日K数据"""
+    try:
+        market, code = convert_symbol_to_tdx(symbol)
+        df = tdx_fetch_bars(category=9, market=market, code=code, is_index=False, start=0, batch=800)
+        if df is None or df.empty:
+            return None
+        # 统一时间列
+        date_col = 'date' if 'date' in df.columns else ('datetime' if 'datetime' in df.columns else None)
+        if date_col is None:
+            return None
+        df[date_col] = pd.to_datetime(df[date_col])
+        df = df.rename(columns={date_col: 'date'})
+        # 按日期区间过滤
+        df = df[(df['date'] >= pd.to_datetime(start_date)) & (df['date'] <= pd.to_datetime(end_date))]
+        if df.empty:
+            return None
+        # 数值化与列重命名
+        df['open'] = pd.to_numeric(df['open'], errors='coerce')
+        df['high'] = pd.to_numeric(df['high'], errors='coerce')
+        df['low'] = pd.to_numeric(df['low'], errors='coerce')
+        df['close'] = pd.to_numeric(df['close'], errors='coerce')
+        df = df.rename(columns={'vol': 'volume', 'amount': 'turnover_money'})
+        # 统一列选择与索引
+        df = df[['date', 'open', 'high', 'low', 'close', 'volume', 'turnover_money']]
+        df = df.set_index('date').sort_index()
+        return df
+    except Exception as e:
+        print(f"获取 {symbol} 数据失败: {e}")
+        return None
+
+
+# 缓存相关设置
+CACHE_DIR = 'data_cache'
+CACHE_DAYS_VALID = 3  # 缓存有效期（天）
+
+# 确保缓存目录存在
+def ensure_cache_dir():
+    if not os.path.exists(CACHE_DIR):
+        os.makedirs(CACHE_DIR)
+
+# 生成缓存文件名
+def get_cache_filename(symbol, start_date, end_date):
+    return os.path.join(CACHE_DIR, f"{symbol}_{start_date}_{end_date}.pkl")
+
+# 检查缓存是否有效
+def is_cache_valid(cache_file):
+    if not os.path.exists(cache_file):
+        return False
+    # 检查文件修改时间
+    mtime = os.path.getmtime(cache_file)
+    days_since_modified = (time.time() - mtime) / (24 * 3600)
+    return days_since_modified <= CACHE_DAYS_VALID
+
+# 从缓存加载数据
+def load_from_cache(symbol, start_date, end_date):
+    cache_file = get_cache_filename(symbol, start_date, end_date)
+    if is_cache_valid(cache_file):
+        try:
+            with open(cache_file, 'rb') as f:
+                return pickle.load(f)
+        except Exception as e:
+            print(f"加载缓存 {symbol} 失败: {e}")
+    return None
+
+# 保存数据到缓存
+def save_to_cache(symbol, data, start_date, end_date):
+    cache_file = get_cache_filename(symbol, start_date, end_date)
+    try:
+        with open(cache_file, 'wb') as f:
+            pickle.dump(data, f)
+    except Exception as e:
+        print(f"保存缓存 {symbol} 失败: {e}")
+# 使用缓存获取股票历史数据
+def get_stock_hist_data_with_cache(symbol, start_date, end_date):
+    # 尝试从缓存加载
+    cached_data = load_from_cache(symbol, start_date, end_date)
+    if cached_data is not None:
+        print(f"从缓存加载 {symbol} 数据")
+        return cached_data
+    # 缓存不存在或已过期，从API获取
+    data = get_stock_hist_data(symbol, start_date, end_date)
+    # 保存到缓存
+    if data is not None:
+        save_to_cache(symbol, data, start_date, end_date)
+    return data
+
+def get_all_stock_data(symbol_list, start_date, end_date):
+    """下载自定义股票池的股票数据（并发优化版）"""
+    # 确保缓存目录存在
+    ensure_cache_dir()
+    all_data = {}
+    failed_symbols = []
+    print(f"正在下载 {len(symbol_list)} 只股票数据...")
+    # 设置最大线程数，避免请求过多被服务器限制
+    max_workers = min(10, len(symbol_list))  # 最多10个并发线程
+    # 使用线程池并发下载
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # 提交所有下载任务
+        future_to_symbol = {executor.submit(get_stock_hist_data_with_cache, symbol, start_date, end_date): symbol 
+                          for symbol in symbol_list}
+        # 逐个处理完成的任务
+        for i, future in enumerate(as_completed(future_to_symbol)):
+            symbol = future_to_symbol[future]
+            try:
+                df = future.result()
+                if df is not None and not df.empty and len(df) >= 30:
+                    all_data[symbol] = df
+                else:
+                    print(f"警告: {symbol} 数据不足或为空，跳过")
+                    failed_symbols.append(symbol)
+                # 显示进度
+                if (i + 1) % 10 == 0 or i + 1 == len(symbol_list):
+                    print(f"进度: {i + 1}/{len(symbol_list)} ({(i + 1) / len(symbol_list) * 100:.1f}%)")
+            except Exception as e:
+                print(f"处理 {symbol} 时出错: {e}")
+                failed_symbols.append(symbol)
+    print(f"✅ 成功下载 {len(all_data)} 只股票，失败 {len(failed_symbols)} 只")
+    if failed_symbols:
+        print(f"失败列表: {failed_symbols}")
+    return all_data, failed_symbols
+
+def get_index_data(start_date, end_date):
+    """使用 pytdx 获取上证指数数据"""
+    try:
+        market, code = 1, '000001'
+        df = tdx_fetch_bars(category=9, market=market, code=code, is_index=True, start=0, batch=800)
+        if df is None or df.empty:
+            return None
+        date_col = 'date' if 'date' in df.columns else ('datetime' if 'datetime' in df.columns else None)
+        if date_col is None:
+            return None
+        df[date_col] = pd.to_datetime(df[date_col])
+        df = df.rename(columns={date_col: 'date'})
+        df = df[(df['date'] >= pd.to_datetime(start_date)) & (df['date'] <= pd.to_datetime(end_date))]
+        if df.empty:
+            return None
+        
+        df['open'] = pd.to_numeric(df['open'], errors='coerce')
+        df['high'] = pd.to_numeric(df['high'], errors='coerce')
+        df['low'] = pd.to_numeric(df['low'], errors='coerce')
+        df['close'] = pd.to_numeric(df['close'], errors='coerce')
+        df = df.rename(columns={'vol': 'volume', 'amount': 'turnover_money'})
+        
+        df = df[['date', 'open', 'high', 'low', 'close', 'volume', 'turnover_money']]
+        df = df.set_index('date').sort_index()
+        print(f"✅ 成功获取上证指数数据，共 {len(df)} 条记录")
+        return df
+    except Exception as e:
+        print(f"下载上证指数失败: {e}")
+        return None
+
+# 生成上证指数缓存文件名
+def get_index_cache_filename(start_date, end_date):
+    return os.path.join(CACHE_DIR, f"index_000001_SH_{start_date}_{end_date}.pkl")
+
+# 使用缓存获取上证指数数据
+def get_index_data_with_cache(start_date, end_date):
+    """使用缓存获取上证指数数据"""
+    # 确保缓存目录存在
+    ensure_cache_dir()
+    # 生成缓存文件名
+    cache_file = get_index_cache_filename(start_date, end_date)
+    # 尝试从缓存加载
+    if is_cache_valid(cache_file):
+        try:
+            with open(cache_file, 'rb') as f:
+                df = pickle.load(f)
+                print(f"✅ 成功从缓存加载上证指数数据")
+                return df
+        except Exception as e:
+            print(f"加载上证指数缓存失败: {e}")
+    # 缓存不存在或已过期，从API获取
+    print("下载上证指数数据 (pytdx)...")
+    df = get_index_data(start_date, end_date)
+    # 保存到缓存
+    if df is not None:
+        try:
+            with open(cache_file, 'wb') as f:
+                pickle.dump(df, f)
+                print(f"上证指数数据已缓存到 {cache_file}")
+        except Exception as e:
+            print(f"保存上证指数缓存失败: {e}")
+    return df
+
+# ==================== 3. 过滤函数 ====================
+def filter_turnover_below_billion(stock_list, all_data, current_date):
+    """过滤成交金额低于10亿的股票"""
+    filtered = []
+    for stock in stock_list:
+        if stock not in all_data:
+            continue
+        df = all_data[stock]
+        if current_date not in df.index:
+            continue
+        if 'turnover_money' in df.columns:
+            current_turnover = df.loc[current_date, 'turnover_money']
+        else:
+            current_price = df.loc[current_date, 'close']
+            current_volume = df.loc[current_date, 'volume']
+            current_turnover = current_price * current_volume
+        if current_turnover >= 1000000000:
+            filtered.append(stock)
+    return filtered
+
+def filter_price_above_ma(stock_list, all_data, current_date, periods=[5]):
+    """多均线过滤函数，过滤出收盘价同时高于所有指定周期均线的个股（默认5日均线，会浪费5天数据）"""
+    filtered = []
+    for stock in stock_list:
+        if stock not in all_data:
+            continue
+        df = all_data[stock]
+        if current_date not in df.index:
+            continue
+        current_close = df.loc[current_date, 'close']
+        current_idx = df.index.get_loc(current_date)
+        # 检查是否满足所有均线条件
+        meets_all_ma = True
+        for period in periods:
+            # 检查是否有足够的数据计算当前周期的均线
+            if len(df) < period or current_idx < period - 1:
+                meets_all_ma = False
+                break
+            # 计算当前周期的均线值
+            ma_data = df.iloc[current_idx-period+1:current_idx+1]
+            ma_value = ma_data['close'].mean()
+            # 如果收盘价低于任何一条均线，则不满足条件
+            if current_close < ma_value:
+                meets_all_ma = False
+                break
+        if meets_all_ma:
+            filtered.append(stock)
+    return filtered
+
+def filter_price_change(stock_list, all_data, current_date, max_gain=9, min_gain=-9):
+    """过滤价格变动超出指定范围的股票"""
+    filtered = []
+    for stock in stock_list:
+        if stock not in all_data:
+            continue
+        df = all_data[stock]
+        if current_date not in df.index or len(df) < 2:
+            continue
+        current_idx = df.index.get_loc(current_date)
+        if current_idx < 1:
+            continue
+        current_close = df.loc[current_date, 'close']
+        prev_close = df.iloc[current_idx-1]['close']
+        gain = (current_close - prev_close) / prev_close * 100
+        if min_gain < gain < max_gain:
+            filtered.append(stock)
+    return filtered
+
+def filter_paused_stock(stock_list, all_data, current_date):
+    """过滤停牌股票"""
+    return [
+        stock for stock in stock_list 
+        if (stock in all_data and 
+            current_date in all_data[stock].index and 
+            all_data[stock].loc[current_date, 'volume'] > 0)
+    ]
+
+def filter_buyagain(stock_list, sold_stock):
+    """过滤卖出不足冷却期的股票"""
+    return [stock for stock in stock_list if stock not in sold_stock]
+
+
+# ==================== 4. 选股与排名函数 ====================
+def get_stock_list(all_data, current_date, sold_stock, portfolio_positions):
+    """获取股票列表 - 使用历史数据进行筛选"""
+    stock_list = STOCK_POOL.copy()
+    
+    # 获取初始过滤后的股票列表
+    stock_list = filter_paused_stock(stock_list, all_data, current_date)
+    
+    # 使用历史数据过滤
+    stock_list = filter_turnover_below_billion(stock_list, all_data, current_date)
+    stock_list = filter_price_change(stock_list, all_data, current_date)
+    
+    # 使用历史数据排名函数
+    stock_list = get_stock_rank_turnover_ratio(all_data, stock_list, current_date)
+    
+    # 均线过滤
+    stock_list = filter_price_above_ma(stock_list, all_data, current_date, periods=[5])
+    
+    # 过滤卖出冷却期
+    stock_list = filter_buyagain(stock_list, sold_stock)
+    
+    # 打印最终结果
+    print(f"\n[{current_date.strftime('%Y-%m-%d')}] 终极排名结果:")
+    print(f"- 符合条件的股票总数: {len(stock_list)}")
+    if len(stock_list) > 0:
+        # 打印前5名
+        print(f"- 排名前5的股票: {', '.join(stock_list[:5])}")
+    
+    return stock_list
+
+def get_stock_rank_turnover_ratio(all_data, stock_list, current_date):
+    """按成交金额比率排序，使用历史数据"""
+    if not stock_list:
+        return []
+    scores = []
+    
+    print("使用历史数据进行排名...")
+    for symbol in stock_list:
+        if symbol not in all_data or current_date not in all_data[symbol].index:
+            continue
+        df = all_data[symbol]
+        current_idx = df.index.get_loc(current_date)
+        if current_idx < 1:
+            continue
+        if 'turnover_money' in df.columns:
+            current_turnover = df.loc[current_date, 'turnover_money']
+            prev_turnover = df.iloc[current_idx-1]['turnover_money']
+        else:
+            current_price, current_volume = df.loc[current_date, ['close', 'volume']]
+            prev_data = df.iloc[current_idx-1]
+            prev_price, prev_volume = prev_data['close'], prev_data['volume']
+            current_turnover = current_price * current_volume
+            prev_turnover = prev_price * prev_volume
+        if prev_turnover > 0:
+            turnover_ratio = current_turnover / prev_turnover
+            scores.append((symbol, turnover_ratio))
+    
+    # 排序并返回结果
+    scores.sort(key=lambda x: x[1])
+    result = [score[0] for score in scores[:min(100, len(scores))]]
+    
+    return result
+
+# ==================== 5. 交割单函数 ====================
+def print_trade_settlement(trade_log, portfolio, cash, last_date, all_data):
+    """打印交易交割单"""
+    if not trade_log:
+        print("\n没有交易记录")
+        return
+    print("\n" + "=" * 80)
+    print("交易交割单 (模拟)")
+    print("=" * 80)
+    headers = ["交易日期", "股票代码", "操作", "价格(元)", "数量(股)", "股票名称"]
+    print("{:<9} {:<9} {:<9} {:<9} {:<9} {:<9}".format(*headers))
+    print("-" * 80)
+    for trade in trade_log:
+        date_str = trade['date'].strftime('%Y-%m-%d')
+        symbol = trade['symbol']
+        name = ''
+        action = trade['action']
+        price = trade['price']
+        shares = trade['shares']
+        print(f"{date_str:<12} {symbol:<12} {action:<9} {price:<12f} {shares:<9.2f} {name:<9}")
+    print("-" * 80)
+
+# ==================== 6. 回测主循环 ====================
+def run_backtest():
+    """运行回测"""
+    if not STOCK_POOL:
+        print("股票池为空，请在文件中设置 STOCK_POOL 列表")
+        return None, None
+    
+    try:
+        print("=" * 60)
+        print(f"单因子选股策略回测 (pytdx 数据源)")
+        print(f"回测期间: {START_DATE} 至 {END_DATE}")
+        print(f"初始资金: {params.initial_capital:,.2f} 元")
+        print("=" * 60)
+
+        # 下载数据
+        all_data, failed_symbols = get_all_stock_data(STOCK_POOL, START_DATE, END_DATE)
+        index_df = get_index_data_with_cache(START_DATE, END_DATE)
+        
+        if index_df is None or index_df.empty:
+            print("上证指数数据获取失败，回测终止")
+            return None, None
+        
+        all_data['000001.SH'] = index_df
+        
+        if len(all_data) < 2:
+            print("数据不足，无法回测")
+            return None, None
+
+        # 初始化
+        cash = params.initial_capital
+        portfolio = {}
+        stock_avg_cost = {}
+        sold_stock = {}
+        trade_log = []
+        equity_curve = []
+        dates = index_df.index
+
+        # 回测主循环
+        print("开始回测...")
+        total_days = len(dates)
+        for i, current_date in enumerate(dates):
+            if total_days > 0 and ((i + 1) % max(1, total_days // 10) == 0 or i == total_days - 1):
+                progress = (i + 1) / total_days * 100
+                print(f"回测进度: {progress:.1f}% ({i+1}/{total_days})")
+            
+            # 更新卖出计数器
+            to_remove = []
+            for stock in sold_stock:
+                sold_stock[stock] -= 1
+                if sold_stock[stock] <= 0:
+                    to_remove.append(stock)
+            for stock in to_remove:
+                del sold_stock[stock]
+
+            # 每日选股
+            candidate_stocks = get_stock_list(all_data, current_date, sold_stock, portfolio.keys())
+
+            # 卖出规则：破5日均线
+            for stock in list(portfolio.keys()):
+                df = all_data.get(stock)
+                if df is None or current_date not in df.index or len(df) < 5:
+                    continue
+                current_idx = df.index.get_loc(current_date)
+                if current_idx < 4:
+                    continue
+                current_price = df.loc[current_date, 'close']
+                ma5_data = df.iloc[current_idx-4:current_idx+1]
+                ma5 = ma5_data['close'].mean()
+                if current_price < ma5:
+                    price = current_price
+                    shares = portfolio[stock]
+                    if shares > 0:
+                        if stock in stock_avg_cost and stock_avg_cost[stock] > 0:
+                            sell_reason = '破线止盈' if price > stock_avg_cost[stock] else '破线止损'
+                        else:
+                            sell_reason = '破线卖出'
+                        amount = shares * price
+                        commission = max(amount * params.commission_rate, params.min_commission)
+                        net_amount = amount - commission
+                        trade_log.append({'date': current_date, 'symbol': stock, 'action': sell_reason,
+                                        'price': price, 'shares': shares, 'amount': amount, 'commission': commission})
+                        cash += net_amount
+                        portfolio[stock] = 0
+                        sold_stock[stock] = params.buyagain
+
+            # 买入规则
+            if candidate_stocks:
+                total_value = cash + sum(portfolio[s] * (all_data[s].loc[current_date, 'close'] 
+                                        if s in all_data and current_date in all_data[s].index else 0) 
+                                        for s in portfolio)
+                target_stocknum = min(params.stocknum, len(candidate_stocks))
+                buycash_per_stock = total_value / target_stocknum if target_stocknum > 0 else 0
+                buy_list = candidate_stocks[:target_stocknum]
+                
+                for stock in buy_list:
+                    if stock not in all_data or current_date not in all_data[stock].index:
+                        continue
+                    price = all_data[stock].loc[current_date, 'close']
+                    if price <= 0:
+                        continue
+                    current_shares = portfolio.get(stock, 0)
+                    current_value = current_shares * price
+                    target_value = buycash_per_stock
+                    if current_value >= target_value * 0.9:
+                        continue
+                    tobuy_value = target_value - current_value
+                    if tobuy_value <= 0:
+                        continue
+                    shares_to_buy = int(tobuy_value / (price * (1 + params.commission_rate)))
+                    shares_to_buy = max(100, (shares_to_buy // 100) * 100)
+                    if shares_to_buy <= 0:
+                        continue
+                    buy_amount = shares_to_buy * price
+                    commission = max(buy_amount * params.commission_rate, params.min_commission)
+                    total_cost = buy_amount + commission
+                    if total_cost > cash * 0.99:
+                        shares_to_buy = int(cash * 0.99 / (price * (1 + params.commission_rate)))
+                        shares_to_buy = max(100, (shares_to_buy // 100) * 100)
+                        if shares_to_buy <= 0:
+                            continue
+                        buy_amount = shares_to_buy * price
+                        commission = max(buy_amount * params.commission_rate, params.min_commission)
+                        total_cost = buy_amount + commission
+                    cash -= total_cost
+                    old_shares = portfolio.get(stock, 0)
+                    old_cost = stock_avg_cost.get(stock, 0) * old_shares
+                    new_shares = old_shares + shares_to_buy
+                    new_cost = old_cost + buy_amount + commission
+                    portfolio[stock] = new_shares
+                    stock_avg_cost[stock] = new_cost / new_shares if new_shares > 0 else 0
+                    trade_log.append({'date': current_date, 'symbol': stock, 'action': '符合买入',
+                                    'price': price, 'shares': shares_to_buy, 'amount': buy_amount, 
+                                    'commission': commission})
+
+            # 记录净值
+            total_value = cash + sum(portfolio[s] * (all_data[s].loc[current_date, 'close'] 
+                                    if s in all_data and current_date in all_data[s].index else 0) 
+                                    for s in portfolio)
+            equity_curve.append(total_value)
+
+        # 输出结果
+        final_value = equity_curve[-1]
+        total_return = (final_value / params.initial_capital - 1) * 100
+
+        # 计算基准收益
+        index_return = 0.0
+        if '000001.SH' in all_data and not all_data['000001.SH'].empty:
+            index_df = all_data['000001.SH']
+            first_date = index_df.index[0]
+            last_date = index_df.index[-1]
+            if 'close' in index_df.columns:
+                start_index = index_df.loc[first_date, 'close']
+                end_index = index_df.loc[last_date, 'close']
+                index_return = (end_index / start_index - 1) * 100
+
+        print_trade_settlement(trade_log, portfolio, cash, dates[-1], all_data)
+        print(f"\n=== 回测结果 ===")
+        print(f"起始资金: {params.initial_capital:,.2f} 元")
+        print(f"结束资金: {final_value:,.2f} 元")
+        print(f"总收益率: {total_return:.2f}%")
+        print(f"上证指数基准收益率: {index_return:.2f}%")
+        plot_results(all_data, equity_curve, dates, trade_log, params.initial_capital)
+
+        return equity_curve, trade_log
+
+    except Exception as e:
+        print(f"回测过程发生错误: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, None
+
+# ==================== 7. 可视化 ====================
+def plot_results(all_data, equity_curve, dates, trade_log, initial_capital):
+    """绘制回测结果"""
+    fig = plt.figure(figsize=(12, 8))
+    
+    ax1 = fig.add_subplot(2, 1, 1)
+    index_df = all_data['000001.SH']
+    ax1.plot(index_df.index, index_df['close'], label='上证指数', color='black')
+    
+    ma10 = index_df['close'].rolling(10).mean()
+    ax1.plot(ma10.index, ma10, label='10日均线', color='orange', linestyle='--')
+    
+    ax2 = fig.add_subplot(2, 1, 2)
+    ax2.plot(dates, equity_curve, label='策略净值', color='blue', linewidth=2)
+    
+    index_start = index_df['close'].iloc[0]
+    index_normalized = [initial_capital * (price / index_start) for price in index_df['close']]
+    ax2.plot(index_df.index, index_normalized, label='上证指数基准', color='red', alpha=0.7)
+    
+    ax1.set_title('上证指数 & 10日均线')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    ax2.set_title('净值曲线')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    for ax in [ax1, ax2]:
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+        locator = mdates.AutoDateLocator(minticks=5, maxticks=15)
+        ax.xaxis.set_major_locator(locator)
+        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+    
+    plt.tight_layout()
+    plt.show()
+
+# ==================== 8. 主程序 ====================
+class StrategyParams:
+    def __init__(self):
+        self.stocknum = 4
+        self.buyagain = 5
+        self.commission_rate = 0.0001
+        self.min_commission = 0.01
+        self.initial_capital = 10000.0
+params = StrategyParams()
+
+START_DATE = '2025-09-01'
+# END_DATE = '2025-11-15'
+END_DATE = date.today().strftime('%Y-%m-%d')
+
+# 股票池: 11.17
+STOCK_POOL = [
+    '000034.SZ', '000039.SZ', '000158.SZ', '000333.SZ', '000338.SZ',
+    '000426.SZ', '000536.SZ', '000555.SZ', '000559.SZ', '000564.SZ',
+    '000566.SZ', '000572.SZ', '000620.SZ', '000632.SZ', '000657.SZ',
+    '000723.SZ', '000792.SZ', '000796.SZ', '000833.SZ', '000973.SZ',
+    '001203.SZ', '001309.SZ', '002028.SZ', '002129.SZ', '002163.SZ',
+    '002176.SZ', '002192.SZ', '002208.SZ', '002218.SZ', '002240.SZ',
+    '002250.SZ', '002251.SZ', '002255.SZ', '002261.SZ', '002298.SZ',
+    '002317.SZ', '002326.SZ', '002340.SZ', '002402.SZ', '002426.SZ',
+    '002451.SZ', '002460.SZ', '002466.SZ', '002497.SZ', '002506.SZ',
+    '002639.SZ', '002709.SZ', '002728.SZ', '002738.SZ', '002741.SZ',
+    '002756.SZ', '002759.SZ', '002805.SZ', '002812.SZ', '002837.SZ',
+    '600016.SH', '600036.SH', '600089.SH', '600096.SH', '600110.SH',
+    '600141.SH', '600157.SH', '600203.SH', '600309.SH', '600338.SH',
+    '600376.SH', '600408.SH', '600410.SH', '600418.SH', '600438.SH',
+    '600519.SH', '600550.SH', '600556.SH', '600693.SH', '600711.SH',
+    '600745.SH', '600759.SH', '600875.SH', '600967.SH', '601012.SH',
+    '601166.SH', '601179.SH', '601288.SH', '601318.SH', '601360.SH',
+    '601398.SH', '601600.SH', '601606.SH', '601888.SH', '601969.SH',
+    '601988.SH', '603026.SH', '603067.SH', '603185.SH', '603260.SH',
+    '603659.SH', '603686.SH', '603799.SH', '603881.SH'
+]
+
+
+if __name__ == '__main__':
+    result = run_backtest()
+    if result is not None:
+        equity_curve, trade_log = result
+        print("✅ 回测完成")
+    else:
+        print("❌ 回测失败")
