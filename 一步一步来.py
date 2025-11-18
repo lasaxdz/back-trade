@@ -3,19 +3,62 @@
 from pytdx.hq import TdxHq_API
 from pytdx.util.best_ip import select_best_ip
 import pandas as pd
+import json
+import time
+import os
+
+def load_cached_server():
+    """加载缓存的最优服务器信息"""
+    cache_file = "data_cache/server_cache.json"
+    cache_expire = 1 * 24 * 3600  # 缓存有效期1天
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                cache_data = json.load(f)
+            # 检查缓存是否过期
+            if time.time() - cache_data.get("timestamp", 0) < cache_expire:
+                return cache_data.get("server", None)
+        except Exception as e:
+            print(f"❌ 加载缓存时发生错误: {e}")
+    return None
+
+def save_cached_server(server_info):
+    """保存最优服务器信息到缓存文件"""
+    cache_file = "data_cache/server_cache.json"
+    cache_data = {
+        "timestamp": time.time(),
+        "server": server_info
+    }
+    try:
+        # 确保缓存目录存在
+        os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(cache_data, f, indent=2)
+        print("✅ 服务器信息已缓存到本地")
+    except Exception as e:
+        print(f"❌ 保存缓存时发生错误: {e}")
 
 def auto_get_best_ip_and_data():
     """自动选择最优服务器并获取股票数据的完整示例"""
-    # 1. 自动选择最佳行情服务器
-    print("正在自动测试最优服务器...")
-    try:
-        best_ip_info = select_best_ip()
-        best_ip = best_ip_info['ip']
-        best_port = best_ip_info['port']
-        print(f"✅ 找到最优服务器: {best_ip}:{best_port}")
-    except Exception as e:
-        print(f"❌ 自动选择最优服务器时发生错误: {e}")
-        return None
+    # 1. 首先尝试加载缓存的服务器信息
+    cached_server = load_cached_server()
+    if cached_server:
+        best_ip = cached_server['ip']
+        best_port = cached_server['port']
+        print(f"✅ 使用缓存的最优服务器: {best_ip}:{best_port}")
+    else:
+        # 2. 如果缓存不存在或过期，重新选择最优服务器
+        print("正在自动测试最优服务器...")
+        try:
+            best_ip_info = select_best_ip()
+            best_ip = best_ip_info['ip']
+            best_port = best_ip_info['port']
+            print(f"✅ 找到最优服务器: {best_ip}:{best_port}")
+            # 保存到缓存
+            save_cached_server(best_ip_info)
+        except Exception as e:
+            print(f"❌ 自动选择最优服务器时发生错误: {e}")
+            return None
     # 2. 创建API对象
     api = TdxHq_API()
     # 3. 连接服务器并获取数据
