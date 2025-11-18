@@ -12,9 +12,13 @@ import baostock as bs
 import pandas as pd
 import numpy as np
 import argparse
+import matplotlib.pyplot as plt
+# 图表中文乱码
+plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS', 'DejaVu Sans']
+plt.rcParams['axes.unicode_minus'] = False
 
 def ema(s, n):
-    """指数移动平均 (EMA): 使用 `span=n` 且 `adjust=False`,与常见技术分析口径保持一致。"""
+    """指数移动平均 (EMA): 使用 `span=n` 且 `adjust=False`,与常见技术分析口径保持一致"""
     return s.ewm(span=int(n), adjust=False).mean()
 
 def kdj(df, n=9, m1=3, m2=3):
@@ -149,6 +153,18 @@ def run(symbol='sh.601138', index_code='sh.000001', start=None, end=None,
     print(f'策略总收益率: {strat_return:.2f}%')
     print(f'上证指数收益率: {idx_return:.2f}%')
 
+    idx_norm = (idx['close'] / idx['close'].iloc[0]).reindex(df.index, method='ffill')
+    idx_equity = equity.iloc[0] * idx_norm
+    plt.figure(figsize=(10, 5))
+    plt.plot(df.index, equity.values, label='策略资金曲线')
+    plt.plot(df.index, idx_equity.values, label='上证指数等值曲线')
+    plt.legend()
+    plt.title('策略 vs 上证指数 收益曲线')
+    plt.xlabel('日期')
+    plt.ylabel('资金/等值')
+    plt.tight_layout()
+    plt.show()
+
 def main():
     """命令行入口：支持标的、指数与各周期参数调节。"""
     p = argparse.ArgumentParser()
@@ -168,3 +184,14 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+
+# 默认结束日期：当天（运行时的系统日期）；
+# 默认开始日期：结束日期往前 720 天（约两年）；若该区间的样本不足 100 个交易日，会自动扩展为结束日前 1500 天（约四年）；若仍不足则报错提示
+'''
+数据量约束: 若区间数据不足 100 个交易日，脚本会报错提示扩大范围或更换标的
+使用教程:
+  指定个股与区间: python niugu.py --symbol sh.600519 --start 2022-01-01 --end 2024-12-31
+  指定个股与指数: python niugu.py --symbol sh.601138 --index sh.000001 --start 2023-01-01 --end 2025-11-01
+'''
