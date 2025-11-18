@@ -65,13 +65,22 @@ def auto_get_best_ip_and_data():
     try:
         with api.connect(best_ip, best_port):  # 使用with语句确保连接被正确关闭
             print("✅ 服务器连接成功!")
+            # ============================
+            # ============================
             # 将股票池转换为pytdx需要的(market, code)格式
             stock_codes = []
             for stock in STOCK_POOL:
                 code, suffix = stock.split('.')
                 market = 1 if suffix == 'SH' else 0
                 stock_codes.append((market, code))
-            quotes = api.get_security_quotes(stock_codes)
+            # 将股票列表分成多个批次查询（pytdx可能有单次查询限制）
+            batch_size = 50
+            all_quotes = []
+            for i in range(0, len(stock_codes), batch_size):
+                batch = stock_codes[i:i+batch_size]
+                batch_quotes = api.get_security_quotes(batch)
+                all_quotes.extend(batch_quotes)
+            quotes = all_quotes
             df_quotes = api.to_df(quotes)
             # 简单处理一下数据，只保留一些重要字段
             important_columns = ['code', 'name', 'price', 'last_close', 'open', 'high', 'low', 'vol', 'amount']
@@ -84,16 +93,57 @@ def auto_get_best_ip_and_data():
                 df_quotes_display['change_percent'] = df_quotes_display['change_percent'].round(2)
             print("\n📊 实时行情数据:")
             print(df_quotes_display)
-            # 示例2: 获取贵州茅台的日K线数据
-            k_lines = api.get_security_bars(9, 1, '600519', 0, 10)  # 9表示日K线，1表示沪市，获取10条数据
-            df_k_lines = api.to_df(k_lines)
-            if not df_k_lines.empty:
-                # 选择需要显示的列
-                k_line_columns = ['datetime', 'open', 'close', 'high', 'low', 'vol']
-                existing_k_line_columns = [col for col in k_line_columns if col in df_k_lines.columns]
-                df_k_lines_display = df_k_lines[existing_k_line_columns]
-                print("\n📈 贵州茅台日K线数据:")
-                print(df_k_lines_display)
+            # ============================
+            # ============================
+            # 获取选股池中所有个股的日K线数据
+            all_k_lines = []
+            for stock in STOCK_POOL:
+                # 解析股票代码和市场
+                if stock.endswith('.SH'):
+                    market = 1  # 沪市
+                    code = stock[:-3]  # 去掉.SH后缀
+                elif stock.endswith('.SZ'):
+                    market = 0  # 深市
+                    code = stock[:-3]  # 去掉.SZ后缀
+                else:
+                    continue  # 跳过不符合格式的股票代码
+                # 获取日K线数据（9表示日K线，获取10条最新数据）
+                k_lines = api.get_security_bars(9, market, code, 0, 10)
+                df_k_line = api.to_df(k_lines)
+                if not df_k_line.empty:
+                    # 添加股票代码列
+                    df_k_line['stock_code'] = stock
+                    # 选择需要显示的列，添加amount（成交金额）字段
+                    k_line_columns = ['stock_code', 'datetime', 'open', 'close', 'high', 'low', 'vol', 'amount']
+                    existing_k_line_columns = [col for col in k_line_columns if col in df_k_line.columns]
+                    df_k_line_display = df_k_line[existing_k_line_columns]
+                    # 打印每只股票的K线数据
+                    print(f"\n📈 {stock} 日K线数据:")
+                    print(df_k_line_display)
+                    all_k_lines.append(df_k_line_display)
+            # 合并所有股票的K线数据
+            if all_k_lines:
+                df_k_lines_display = pd.concat(all_k_lines, ignore_index=True)
+                # 按交易日分组，每组内按成交金额降序排列
+                print(f"\n{'='*60}")
+                print("📊 所有个股日K线数据按交易日汇总（按成交金额降序）")
+                print(f"{'='*60}")
+                # 遍历每个交易日，只打印第一日和最后一日
+                groups = list(df_k_lines_display.groupby('datetime'))
+                if groups:
+                    # 打印第一日数据
+                    first_datetime, first_data = groups[0]
+                    sorted_first_data = first_data.sort_values(by='amount', ascending=False)
+                    print(f"\n日期: {first_datetime} (第一日)")
+                    print(sorted_first_data)
+                    # 打印最后一日数据（避免与第一日重复）
+                    last_datetime, last_data = groups[-1]
+                    if first_datetime != last_datetime:
+                        sorted_last_data = last_data.sort_values(by='amount', ascending=False)
+                        print(f"\n日期: {last_datetime} (最后一日)")
+                        print(sorted_last_data)
+            else:
+                df_k_lines_display = pd.DataFrame()  # 返回空DataFrame
             return df_quotes_display, df_k_lines_display
     except Exception as e:
         print(f"❌ 在连接服务器或获取数据时发生错误: {e}")
@@ -121,10 +171,11 @@ STOCK_POOL = [
     '601166.SH', '601179.SH', '601288.SH', '601318.SH', '601360.SH',
     '601398.SH', '601600.SH', '601606.SH', '601888.SH', '601969.SH',
     '601988.SH', '603026.SH', '603067.SH', '603185.SH', '603260.SH',
-    '603659.SH', '603686.SH', '603799.SH', '603881.SH'
+    '603659.SH', '603686.SH', '603799.SH', '603881.SH', '603993.SH',
 ]
 
 if __name__ == "__main__":
     auto_get_best_ip_and_data()
+
 
 
