@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import time
 import warnings
+import os
+import json
 # 设置警告过滤和中文字体
 warnings.filterwarnings('ignore')
 plt.rcParams['font.sans-serif'] = ['SimHei', 'Arial Unicode MS', 'DejaVu Sans']
@@ -20,11 +22,27 @@ def convert_symbol_to_baostock(symbol):
     return symbol
 
 def get_stock_hist_data(symbol, start_date, end_date, adjustflag='2'):
-    """使用Baostock获取单只股票历史数据;adjustflag: '1'后复权, '2'前复权, '3'不复权"""
+    """使用Baostock获取单只股票历史数据，内置CSV缓存：优先本地覆盖，缺失时补齐并更新缓存。"""
     try:
-        # 转换股票代码格式
+        cache_dir = os.path.join(os.path.dirname(__file__), 'cache')
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_file = os.path.join(cache_dir, f"{symbol.replace('.', '_')}.csv")
+        cached = None
+        if os.path.exists(cache_file):
+            try:
+                cdf = pd.read_csv(cache_file)
+                cdf['date'] = pd.to_datetime(cdf['date'])
+                # 尝试兼容两种列命名：amount 或 turnover_money
+                if 'amount' in cdf.columns and 'turnover_money' not in cdf.columns:
+                    cdf = cdf.rename(columns={'amount': 'turnover_money'})
+                cdf = cdf.set_index('date').sort_index()
+                cached = cdf
+                if not cdf.empty and cdf.index.min() <= pd.to_datetime(start_date) and cdf.index.max() >= pd.to_datetime(end_date):
+                    return cdf.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)].copy()
+            except Exception:
+                cached = None
+
         code = convert_symbol_to_baostock(symbol)
-        # 获取股票日K线数据
         rs = bs.query_history_k_data_plus(
             code,
             "date,open,high,low,close,volume,amount,adjustflag,turn,tradestatus,pctChg,isST",
@@ -35,15 +53,13 @@ def get_stock_hist_data(symbol, start_date, end_date, adjustflag='2'):
         )
         if rs.error_code != '0':
             print(f'获取 {symbol} 数据失败: {rs.error_msg}')
-            return None
-        # 转换为DataFrame
+            return cached.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)].copy() if cached is not None else None
         data_list = []
         while (rs.error_code == '0') & rs.next():
             data_list.append(rs.get_row_data())
         if not data_list:
-            return None
+            return cached.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)].copy() if cached is not None else None
         df = pd.DataFrame(data_list, columns=rs.fields)
-        # 转换数据类型
         df['date'] = pd.to_datetime(df['date'])
         df['open'] = pd.to_numeric(df['open'], errors='coerce')
         df['high'] = pd.to_numeric(df['high'], errors='coerce')
@@ -51,17 +67,31 @@ def get_stock_hist_data(symbol, start_date, end_date, adjustflag='2'):
         df['close'] = pd.to_numeric(df['close'], errors='coerce')
         df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
         df['amount'] = pd.to_numeric(df['amount'], errors='coerce')
-        # 设置索引
         df = df.set_index('date')
-        # 重命名列以匹配原有格式
-        df = df.rename(columns={
-            'amount': 'turnover_money'  # 成交额
-        })
-        # 过滤停牌日期（tradestatus='0'表示停牌）
+        df = df.rename(columns={'amount': 'turnover_money'})
         df = df[df['tradestatus'] == '1']
-        # 删除不需要的列
         df = df.drop(columns=['adjustflag', 'tradestatus', 'isST'], errors='ignore')
-        return df
+        return_df = df
+        try:
+            if cached is not None:
+                merged = pd.concat([cached, df]).sort_index()
+                merged = merged[~merged.index.duplicated(keep='last')]
+                merged.to_csv(cache_file, index=True)
+                try:
+                    _update_manifest(cache_dir, symbol, merged.index.min(), merged.index.max(), len(merged))
+                except Exception:
+                    pass
+                return_df = merged.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)].copy()
+            else:
+                df.sort_index().to_csv(cache_file, index=True)
+                try:
+                    _update_manifest(cache_dir, symbol, df.index.min(), df.index.max(), len(df))
+                except Exception:
+                    pass
+                return_df = df.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)].copy()
+        except Exception:
+            return_df = df.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)].copy()
+        return return_df
     except Exception as e:
         print(f"获取 {symbol} 数据失败: {e}")
         return None
@@ -93,42 +123,91 @@ def prepare_indicators(all_data):
         df['ma5'] = df['close'].rolling(5).mean()
 
 def get_index_data(start_date, end_date):
-    """获取上证指数数据"""
+    """获取上证指数数据，带CSV缓存（INDEX_sh_000001.csv）"""
     try:
-        print("下载上证指数数据...")
-        # 获取上证指数历史数据
+        cache_dir = os.path.join(os.path.dirname(__file__), 'cache')
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_file = os.path.join(cache_dir, 'INDEX_sh_000001.csv')
+        cached = None
+        if os.path.exists(cache_file):
+            try:
+                cdf = pd.read_csv(cache_file)
+                cdf['date'] = pd.to_datetime(cdf['date'])
+                cdf = cdf.set_index('date').sort_index()
+                cached = cdf
+                if not cdf.empty and cdf.index.min() <= pd.to_datetime(start_date) and cdf.index.max() >= pd.to_datetime(end_date):
+                    return cdf.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)].copy()
+            except Exception:
+                cached = None
         rs = bs.query_history_k_data_plus(
             "sh.000001",
             "date,open,high,low,close,volume,amount",
             start_date=start_date,
             end_date=end_date,
             frequency="d",
-            adjustflag="3"  # 指数不需要复权
+            adjustflag="3"
         )
         if rs.error_code != '0':
             print(f'获取上证指数失败: {rs.error_msg}')
-            return None
-        # 转换为DataFrame
+            return cached.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)].copy() if cached is not None else None
         data_list = []
         while (rs.error_code == '0') & rs.next():
             data_list.append(rs.get_row_data())
         if not data_list:
-            return None
+            return cached.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)].copy() if cached is not None else None
         df = pd.DataFrame(data_list, columns=rs.fields)
-        # 转换数据类型
         df['date'] = pd.to_datetime(df['date'])
         df['open'] = pd.to_numeric(df['open'], errors='coerce')
         df['high'] = pd.to_numeric(df['high'], errors='coerce')
         df['low'] = pd.to_numeric(df['low'], errors='coerce')
         df['close'] = pd.to_numeric(df['close'], errors='coerce')
         df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
-        # 设置索引
-        df = df.set_index('date')
-        print(f"成功获取上证指数数据，共 {len(df)} 条记录")
-        return df
+        df = df.set_index('date').sort_index()
+        try:
+            if cached is not None:
+                merged = pd.concat([cached, df]).sort_index()
+                merged = merged[~merged.index.duplicated(keep='last')]
+                merged.to_csv(cache_file, index=True)
+                try:
+                    _update_manifest(cache_dir, 'INDEX_sh_000001', merged.index.min(), merged.index.max(), len(merged))
+                except Exception:
+                    pass
+                return merged.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)].copy()
+            else:
+                df.to_csv(cache_file, index=True)
+                try:
+                    _update_manifest(cache_dir, 'INDEX_sh_000001', df.index.min(), df.index.max(), len(df))
+                except Exception:
+                    pass
+                return df.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)].copy()
+        except Exception:
+            return df.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)].copy()
     except Exception as e:
         print(f"下载上证指数失败: {e}")
         return None
+
+def _update_manifest(cache_dir, symbol, min_date, max_date, rows_count):
+    """更新缓存清单文件（manifest.json）"""
+    path = os.path.join(cache_dir, 'manifest.json')
+    data = {}
+    if os.path.exists(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+    entry = {
+        'min_date': str(pd.to_datetime(min_date).date()),
+        'max_date': str(pd.to_datetime(max_date).date()),
+        'rows': int(rows_count),
+        'last_update_ts': int(time.time())
+    }
+    data[symbol] = entry
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
 # ==================== 3. 选股、过滤与排名函数 ====================
 def get_stock_list(all_data, current_date, sold_stock, portfolio_positions):
