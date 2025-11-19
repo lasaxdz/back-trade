@@ -96,23 +96,79 @@ def get_stock_hist_data(symbol, start_date, end_date, adjustflag='2'):
         print(f"获取 {symbol} 数据失败: {e}")
         return None
 
-def get_all_stock_data(symbol_list, start_date, end_date):
-    """下载自定义股票池的股票数据"""
+def _load_manifest(cache_dir):
+    path = os.path.join(cache_dir, 'manifest.json')
+    if os.path.exists(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def get_all_stock_data(symbol_list, start_date, end_date, prefer_cache_only=True):
+    """优先本地缓存加载；必要时下载缺失并回写缓存。prefer_cache_only=True 时只用缓存不下载。"""
+    cache_dir = os.path.join(os.path.dirname(__file__), 'cache')
+    os.makedirs(cache_dir, exist_ok=True)
+    manifest = _load_manifest(cache_dir)
     all_data = {}
     failed_symbols = []
-    print(f"正在下载 {len(symbol_list)} 只股票数据...")
-    for i, symbol in enumerate(symbol_list):
+    cache_hits = 0
+    to_download = 0
+    for symbol in symbol_list:
+        # 先判断清单覆盖情况
+        entry = manifest.get(symbol)
+        has_full_cover = False
+        if entry:
+            try:
+                has_full_cover = (pd.to_datetime(entry['min_date']) <= pd.to_datetime(start_date) and
+                                   pd.to_datetime(entry['max_date']) >= pd.to_datetime(end_date))
+            except Exception:
+                has_full_cover = False
+        cache_file = os.path.join(cache_dir, f"{symbol.replace('.', '_')}.csv")
+        if has_full_cover and os.path.exists(cache_file):
+            try:
+                cdf = pd.read_csv(cache_file)
+                cdf['date'] = pd.to_datetime(cdf['date'])
+                if 'amount' in cdf.columns and 'turnover_money' not in cdf.columns:
+                    cdf = cdf.rename(columns={'amount': 'turnover_money'})
+                cdf = cdf.set_index('date').sort_index()
+                df = cdf.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)].copy()
+                if not df.empty and len(df) > 30:
+                    all_data[symbol] = df
+                    cache_hits += 1
+                    continue
+            except Exception:
+                pass
+        if prefer_cache_only:
+            # 只用缓存模式：若没有完整覆盖，尽量取交集，否则跳过
+            if os.path.exists(cache_file):
+                try:
+                    cdf = pd.read_csv(cache_file)
+                    cdf['date'] = pd.to_datetime(cdf['date'])
+                    if 'amount' in cdf.columns and 'turnover_money' not in cdf.columns:
+                        cdf = cdf.rename(columns={'amount': 'turnover_money'})
+                    cdf = cdf.set_index('date').sort_index()
+                    df = cdf.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)].copy()
+                    if not df.empty and len(df) > 30:
+                        all_data[symbol] = df
+                        cache_hits += 1
+                        continue
+                except Exception:
+                    pass
+            failed_symbols.append(symbol)
+            continue
+        # 需要下载缺失
+        to_download += 1
         df = get_stock_hist_data(symbol, start_date, end_date)
         if df is not None and not df.empty and len(df) > 30:
             all_data[symbol] = df
         else:
-            print(f"警告: {symbol} 数据不足或为空，跳过")
             failed_symbols.append(symbol)
-        # 避免请求过快
         time.sleep(getattr(params, 'download_sleep', 0.02))
-    print(f"成功下载 {len(all_data)} 只股票，失败 {len(failed_symbols)} 只")
+    print(f"缓存加载: {cache_hits} 只；网络下载: {to_download} 只；失败: {len(failed_symbols)} 只")
     if failed_symbols:
-        print(f"失败列表: {failed_symbols}")
+        print(f"失败列表(部分): {', '.join(failed_symbols[:20])} ... 共 {len(failed_symbols)}")
     return all_data, failed_symbols
 
 def prepare_indicators(all_data):
@@ -364,7 +420,7 @@ def run_backtest():
         print(f"回测期间: {START_DATE} 至 {END_DATE}")
         print(f"初始资金: {params.initial_capital:,.2f} 元")
         print("=" * 60)
-        all_data, failed_symbols = get_all_stock_data(STOCK_POOL, START_DATE, END_DATE)
+        all_data, failed_symbols = get_all_stock_data(STOCK_POOL, START_DATE, END_DATE, prefer_cache_only=True)
         prepare_indicators(all_data)
         # 2. 下载上证指数
         index_df = get_index_data(START_DATE, END_DATE)
@@ -505,6 +561,7 @@ def run_backtest():
                 index_return = (end_index / start_index - 1) * 100
         print_trade_settlement(trade_log, portfolio, cash, dates[-1], all_data)
         print(f"\n=== 回测结果 ===")
+        print(f"回测期间: {START_DATE} 至 {END_DATE}")
         print(f"起始资金: {params.initial_capital:,.2f} 元")
         print(f"结束资金: {final_value:,.2f} 元")
         print(f"总收益率: {total_return:.2f}%")
@@ -974,7 +1031,6 @@ STOCK_POOL = {
     '001229.SZ': '魅视科技',
     '001230.SZ': '劲旅环境',
     '001231.SZ': '农心科技',
-    '001233.SZ': '海安集团',
     '001234.SZ': '泰慕士',
     '001236.SZ': '弘业期货',
     '001238.SZ': '浙江正特',
@@ -991,7 +1047,6 @@ STOCK_POOL = {
     '001277.SZ': '速达股份',
     '001278.SZ': '一彬科技',
     '001279.SZ': '强邦新材',
-    '001280.SZ': '中国铀业',
     '001282.SZ': '三联锻造',
     '001283.SZ': '豪鹏科技',
     '001285.SZ': '瑞立科密',
