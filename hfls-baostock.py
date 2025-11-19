@@ -129,18 +129,62 @@ def get_index_data(start_date, end_date):
         print(f"下载上证指数失败: {e}")
         return None
 
-# ==================== 2. 过滤函数 ====================
-def get_ma5(symbol, all_data, current_date):
-    """获取5日均线值"""
-    if symbol not in all_data:
-        return 0
-    df = all_data[symbol]
-    if current_date not in df.index:
-        return 0
-    ma5 = df.loc[current_date, 'ma5'] if 'ma5' in df.columns else None
-    if pd.isna(ma5):
-        return 0
-    return ma5
+# ==================== 3. 选股、过滤与排名函数 ====================
+def get_stock_list(all_data, current_date, sold_stock, portfolio_positions):
+    """获取股票列表 - 每日更新股池"""
+    stock_list = STOCK_POOL.copy()
+    # 1. 保留原始股票池
+    # 2. 保留可用股票
+    # 3. 初级筛选：成交金额不低于10亿
+    stock_list = filter_turnover_below_billion(stock_list, all_data, current_date)
+    # 4. 初级排名：按当日成交金额/前一日成交金额从小到大排序
+    stock_list = get_stock_rank_turnover_ratio(all_data, stock_list, current_date)
+    # 5. 高级过滤：
+    # a. 过滤价格变动超出9%的股票
+    stock_list = filter_price_change(stock_list, all_data, current_date)
+    # b. 过滤低于5日均线的个股
+    stock_list = filter_price_above_ma5(stock_list, all_data, current_date)
+    # c. 过滤冷却期内的股票
+    stock_list = filter_buyagain(stock_list, sold_stock)
+    # 输出终极排名信息
+    print(f"[{current_date.strftime('%Y-%m-%d')}] 终极排名结果:")
+    print(f"- 符合条件的股票总数: {len(stock_list)}")
+    if len(stock_list) > 0:
+        print(f"- 排名前10的股票: {', '.join(stock_list[:10])}")
+    return stock_list
+
+def get_stock_rank_turnover_ratio(all_data, stock_list, current_date):
+    """股票排名 - 按当日成交金额/前一日成交金额从小到大排序"""
+    if not stock_list:
+        return []
+    ranked_stocks = []
+    turnover_ratios = []
+    for symbol in stock_list:
+        if symbol not in all_data:
+            continue
+        df = all_data[symbol]
+        if current_date not in df.index or len(df) < 2:
+            continue
+        current_idx = df.index.get_loc(current_date)
+        if current_idx < 1:
+            continue
+        if 'turnover_money' in df.columns:
+            current_turnover = df.loc[current_date, 'turnover_money']
+            prev_turnover = df.iloc[current_idx-1]['turnover_money']
+        else:
+            current_turnover = df.loc[current_date, 'close'] * df.loc[current_date, 'volume']
+            prev_turnover = df.iloc[current_idx-1]['close'] * df.iloc[current_idx-1]['volume']
+        # 避免除以零
+        if prev_turnover > 0:
+            turnover_ratio = current_turnover / prev_turnover
+            turnover_ratios.append(turnover_ratio)
+            ranked_stocks.append(symbol)
+    if not ranked_stocks:
+        return []
+    scores = [(ranked_stocks[i], turnover_ratios[i]) for i in range(len(ranked_stocks))]
+    # 从小到大排序
+    scores.sort(key=lambda x: x[1])
+    return [score[0] for score in scores[:min(100, len(scores))]]
 
 def filter_price_above_ma5(stock_list, all_data, current_date):
     """过滤股价小于5日均线的个股"""
@@ -201,63 +245,6 @@ def filter_price_change(stock_list, all_data, current_date, max_gain=9, min_gain
 def filter_buyagain(stock_list, sold_stock):
     """过滤卖出不足params.buyagain日的股票"""
     return [stock for stock in stock_list if stock not in sold_stock]
-
-# ==================== 3. 选股与排名函数 ====================
-def get_stock_list(all_data, current_date, sold_stock, portfolio_positions):
-    """获取股票列表 - 每日更新股池"""
-    stock_list = STOCK_POOL.copy()
-    # 1. 保留原始股票池
-    # 2. 保留可用股票
-    # 3. 初级筛选：成交金额不低于10亿
-    stock_list = filter_turnover_below_billion(stock_list, all_data, current_date)
-    # 4. 初级排名：按当日成交金额/前一日成交金额从小到大排序
-    stock_list = get_stock_rank_turnover_ratio(all_data, stock_list, current_date)
-    # 5. 高级过滤：
-    # a. 过滤价格变动超出9%的股票
-    stock_list = filter_price_change(stock_list, all_data, current_date)
-    # b. 过滤低于5日均线的个股
-    stock_list = filter_price_above_ma5(stock_list, all_data, current_date)
-    # c. 过滤冷却期内的股票
-    stock_list = filter_buyagain(stock_list, sold_stock)
-    # 输出终极排名信息
-    print(f"[{current_date.strftime('%Y-%m-%d')}] 终极排名结果:")
-    print(f"- 符合条件的股票总数: {len(stock_list)}")
-    if len(stock_list) > 0:
-        print(f"- 排名前10的股票: {', '.join(stock_list[:10])}")
-    return stock_list
-
-def get_stock_rank_turnover_ratio(all_data, stock_list, current_date):
-    """股票排名 - 按当日成交金额/前一日成交金额从小到大排序"""
-    if not stock_list:
-        return []
-    ranked_stocks = []
-    turnover_ratios = []
-    for symbol in stock_list:
-        if symbol not in all_data:
-            continue
-        df = all_data[symbol]
-        if current_date not in df.index or len(df) < 2:
-            continue
-        current_idx = df.index.get_loc(current_date)
-        if current_idx < 1:
-            continue
-        if 'turnover_money' in df.columns:
-            current_turnover = df.loc[current_date, 'turnover_money']
-            prev_turnover = df.iloc[current_idx-1]['turnover_money']
-        else:
-            current_turnover = df.loc[current_date, 'close'] * df.loc[current_date, 'volume']
-            prev_turnover = df.iloc[current_idx-1]['close'] * df.iloc[current_idx-1]['volume']
-        # 避免除以零
-        if prev_turnover > 0:
-            turnover_ratio = current_turnover / prev_turnover
-            turnover_ratios.append(turnover_ratio)
-            ranked_stocks.append(symbol)
-    if not ranked_stocks:
-        return []
-    scores = [(ranked_stocks[i], turnover_ratios[i]) for i in range(len(ranked_stocks))]
-    # 从小到大排序
-    scores.sort(key=lambda x: x[1])
-    return [score[0] for score in scores[:min(100, len(scores))]]
 
 # ==================== 4. 交割单函数 ====================
 def print_trade_settlement(trade_log, portfolio, cash, last_date, all_data):
@@ -478,25 +465,47 @@ def plot_results(all_data, equity_curve, dates, trade_log, initial_capital):
     plt.show()
 
 # ==================== 8. 主程序 ====================
+def load_stock_pool_from_file(path):
+    """从文件加载股票池"""
+    syms = []
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('STOCK_POOL'):
+                    continue
+                token = line.split()[0]
+                if len(token) == 6 and token.isdigit():
+                    if token.startswith(('6', '688', '605', '603', '601')):
+                        syms.append(f"{token}.SS")
+                    else:
+                        syms.append(f"{token}.SZ")
+                elif token.endswith('.SS') or token.endswith('.SZ'):
+                    syms.append(token)
+        if syms:
+            return syms
+    except Exception:
+        pass
+    return [
+        "601360.SS", "601012.SS", "600089.SS", "601888.SS", "603799.SS",
+        "601899.SS", "601318.SS", "600111.SS", "600438.SS",
+        "002130.SZ", "002466.SZ", "002460.SZ", "000002.SZ", "000858.SZ",
+        "000063.SZ", "002384.SZ", "000568.SZ", "000792.SZ"
+    ]
+
 class StrategyParams:
     def __init__(self):
         self.stocknum = 4
         self.buyagain = 5
         self.commission_rate = 0.0001
         self.min_commission = 0.01
-        self.initial_capital = 10000.0
-        self.min_turnover = 1000000000
+        self.initial_capital = 1_0000.0
+        self.min_turnover = 10_0000_0000
 params = StrategyParams()
 
 START_DATE = '2025-09-01'
 END_DATE = '2025-11-01'
-
-STOCK_POOL = [
-    "601138.SS", "601012.SS", "600089.SS", "601888.SS", "603799.SS", 
-    "601899.SS", "601318.SS", "600111.SS", "600438.SS", 
-    "002475.SZ", "002466.SZ", "002460.SZ", "000002.SZ", "000858.SZ", 
-    "000063.SZ", "002384.SZ", "000568.SZ", "000792.SZ"
-]
+STOCK_POOL = load_stock_pool_from_file(r'd:\Sync\Zaqi\3.my_trade\主板非ST.txt')
 
 if __name__ == '__main__':
     result = run_backtest()
